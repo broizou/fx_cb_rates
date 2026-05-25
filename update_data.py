@@ -1661,28 +1661,46 @@ def fetch_ch_implied_rates(meetings: list[str]) -> "list | None":
 _NZ_BA_QUARTERLY = {3: 'H', 6: 'M', 9: 'U', 12: 'Z'}
 
 
+def _barchart_session() -> "requests.Session":
+    """
+    Open a Barchart session by loading the homepage first so that session
+    cookies (including XSRF-TOKEN) are set before any API calls.
+    """
+    s = requests.Session()
+    try:
+        s.get("https://www.barchart.com/", headers=HTTP_HEADERS, timeout=15)
+    except Exception as exc:
+        log.debug("  NZ Barchart session init: %s", exc)
+    return s
+
+
 def _barchart_bf_prices(symbols: list) -> "dict | None":
     """
     Batch-fetch last prices for BF futures from Barchart internal API.
+    Establishes a session first to pick up XSRF-TOKEN.
     Returns {symbol: price} or None on failure.
     """
-    joined = "%2C".join(symbols)
+    session = _barchart_session()
+    xsrf    = session.cookies.get("XSRF-TOKEN", "")
+    joined  = "%2C".join(symbols)
     url = (
         "https://www.barchart.com/proxies/core-api/v1/quotes/get"
         f"?symbols={joined}&fields=symbol%2ClastPrice%2CtradeTime&raw=1"
     )
+    headers = {
+        **HTTP_HEADERS,
+        "Referer": "https://www.barchart.com/",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    if xsrf:
+        headers["x-xsrf-token"] = xsrf
     try:
-        resp = requests.get(url, headers={
-            **HTTP_HEADERS,
-            "Referer": "https://www.barchart.com/",
-            "X-Requested-With": "XMLHttpRequest",
-        }, timeout=15)
+        resp = session.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         result = {}
         for item in data.get("data", []):
-            # API returns either flat dict or {"raw": {...}, ...}
-            raw = item.get("raw", item)
+            raw   = item.get("raw", item)
             sym   = raw.get("symbol")
             price = raw.get("lastPrice")
             if sym and price is not None:
@@ -1693,40 +1711,61 @@ def _barchart_bf_prices(symbols: list) -> "dict | None":
     return None
 
 
+def _find_price_in_json(obj, depth: int = 0) -> "float | None":
+    """Recursively search a parsed JSON structure for a futures lastPrice."""
+    if depth > 12:
+        return None
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in ("lastPrice", "regularMarketPrice", "close") and isinstance(v, (int, float)):
+                fv = float(v)
+                if 80.0 <= fv <= 105.0:
+                    return fv
+            r = _find_price_in_json(v, depth + 1)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for item in obj:
+            r = _find_price_in_json(item, depth + 1)
+            if r is not None:
+                return r
+    return None
+
+
 def _barchart_bf_page_price(symbol: str) -> "float | None":
     """Scrape a single Barchart quote page for a BF contract price."""
     url = f"https://www.barchart.com/futures/quotes/{symbol}/overview"
     try:
         resp = requests.get(url, headers=HTTP_HEADERS, timeout=15)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.content, "html.parser")
+        text = resp.text
+        soup = BeautifulSoup(text, "html.parser")
 
-        # 1. og:description  e.g. "BFM26 is trading at 96.245 ..."
-        og = soup.find("meta", property="og:description")
-        if og:
-            m = re.search(r"trading at ([\d.]+)", og.get("content", ""))
-            if m:
-                return float(m.group(1))
-
-        # 2. JSON-LD structured data
-        for script in soup.find_all("script", type="application/ld+json"):
+        # 1. Next.js __NEXT_DATA__ server-side JSON (most reliable)
+        nd = soup.find("script", id="__NEXT_DATA__")
+        if nd and nd.string:
             try:
-                d = json.loads(script.string or "")
-                price = (d.get("price")
-                         or (d.get("offers") or {}).get("price"))
-                if price:
-                    return float(price)
+                price = _find_price_in_json(json.loads(nd.string))
+                if price is not None:
+                    log.debug("  NZ Barchart %s: __NEXT_DATA__ price=%.4f", symbol, price)
+                    return price
             except Exception:
                 pass
 
-        # 3. Page title  e.g. "BFM26 Futures Price - 96.245 ..."
-        title = soup.find("title")
-        if title:
-            m = re.search(r"[\-–]\s*([\d.]+)", title.get_text())
+        # 2. Any inline script containing "lastPrice": NUMBER
+        m = re.search(r'"lastPrice"\s*:\s*([\d.]+)', text)
+        if m:
+            v = float(m.group(1))
+            if 80.0 <= v <= 105.0:
+                log.debug("  NZ Barchart %s: inline lastPrice=%.4f", symbol, v)
+                return v
+
+        # 3. og:description
+        og = soup.find("meta", property="og:description")
+        if og:
+            m = re.search(r'(9\d\.\d{2,4})', og.get("content", ""))
             if m:
-                v = float(m.group(1))
-                if 80.0 <= v <= 105.0:   # plausible BA futures price range
-                    return v
+                return float(m.group(1))
 
     except Exception as exc:
         log.debug("  NZ Barchart page %s: %s", symbol, exc)
