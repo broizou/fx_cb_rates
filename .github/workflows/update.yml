@@ -23,7 +23,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 openpyxl websocket-client
+          pip install requests beautifulsoup4 openpyxl websocket-client tzdata
 
       - name: Run update_data.py
         run: python update_data.py

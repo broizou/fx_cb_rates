@@ -32,7 +32,8 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 try:
     import requests
@@ -46,6 +47,8 @@ try:
     _OPENPYXL = True
 except ImportError:
     _OPENPYXL = False
+
+_CEST = ZoneInfo("Europe/Paris")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  CONFIG
@@ -177,7 +180,7 @@ def scrape_fed_meetings() -> list[str]:
     url  = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
     log.info("Fetching US meetings: %s", url)
     soup  = fetch(url)
-    today = date.today()
+    today = datetime.now(_CEST).date()
     meetings: list[str] = []
 
     for row in soup.find_all("div", class_="fomc-meeting"):
@@ -228,7 +231,7 @@ def scrape_boe_meetings() -> list[str]:
     url  = "https://www.bankofengland.co.uk/monetary-policy/upcoming-mpc-dates"
     log.info("Fetching UK meetings: %s", url)
     soup  = fetch(url)
-    today = date.today()
+    today = datetime.now(_CEST).date()
     meetings: list[str] = []
 
     for tr in soup.find_all("tr"):
@@ -270,7 +273,7 @@ def scrape_ecb_meetings() -> list[str]:
     url  = "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
     log.info("Fetching EU meetings: %s", url)
     soup  = fetch(url)
-    today = date.today()
+    today = datetime.now(_CEST).date()
     meetings: list[str] = []
 
     dl = soup.find("div", class_="definition-list") or soup.find("dl")
@@ -303,7 +306,7 @@ def scrape_boc_meetings() -> list[str]:
     url  = "https://www.bankofcanada.ca/core-functions/monetary-policy/key-interest-rate/"
     log.info("Fetching CA meetings: %s", url)
     soup  = fetch(url)
-    today = date.today()
+    today = datetime.now(_CEST).date()
     meetings: list[str] = []
 
     table = soup.find("table", id="target-table")
@@ -344,7 +347,7 @@ def scrape_rba_meetings() -> list[str]:
     url  = "https://www.rba.gov.au/monetary-policy/int-rate-decisions/"
     log.info("Fetching AU meetings: %s", url)
     soup  = fetch(url)
-    today = date.today()
+    today = datetime.now(_CEST).date()
     meetings: list[str] = []
 
     for a in soup.find_all("a", href=True):
@@ -485,7 +488,7 @@ def scrape_boc_rate() -> float:
     url = "https://www.bankofcanada.ca/core-functions/monetary-policy/key-interest-rate/"
     log.info("Fetching CA rate: %s", url)
     soup  = fetch(url)
-    today = date.today()
+    today = datetime.now(_CEST).date()
     table = soup.find("table", id="target-table")
     if table:
         for row in table.find_all("tr"):
@@ -572,7 +575,7 @@ def scrape_boj_meetings() -> list[str]:
     url  = "https://www.boj.or.jp/en/mopo/mpmsche_minu/"
     log.info("Fetching JP meetings: %s", url)
     soup  = fetch(url)
-    today = date.today()
+    today = datetime.now(_CEST).date()
     meetings: list[str] = []
 
     for h2 in soup.find_all("h2"):
@@ -819,7 +822,7 @@ def _interpolate_curve(
     meetings     : meeting date strings in "%d %b %Y" format
     label        : log prefix (e.g. "ECB", "UK OIS")
     """
-    today = date.today()
+    today = datetime.now(_CEST).date()
     results: list[float] = []
     for mtg_str in meetings:
         try:
@@ -871,7 +874,7 @@ def fetch_ecb_implied_rates(meetings: list[str]) -> "list[float] | None":
     Source: TradingView scanner API, exchange EUREX.
     Fallback: ECB SDW AAA government bond yield curve (SR_3M … SR_3Y).
     """
-    today = date.today()
+    today = datetime.now(_CEST).date()
 
     # ── Build list of contracts needed ───────────────────────────────────────
     contract_months: list[tuple[str, str, float]] = []  # (mtg_str, tv_sym, t_yr)
@@ -944,7 +947,7 @@ def _ecb_yc_fallback(meetings: list[str]) -> "list[float] | None":
     Fallback: ECB SDW AAA government bond yield curve (SR_3M … SR_3Y).
     Flat below 3M — used only when EURIBOR futures are unavailable.
     """
-    today = date.today()
+    today = datetime.now(_CEST).date()
     tenor_map = {"3M": 0.25, "6M": 0.5, "9M": 0.75, "2Y": 2.0, "3Y": 3.0}
     raw: dict[float, float] = {}
 
@@ -989,7 +992,7 @@ def fetch_uk_implied_rates(meetings: list[str]) -> "list | None":
     Same anchoring approach as ECB EURIBOR: spread = nearest_contract - BOE rate.
     Fallback: BOE SONIA OIS instantaneous forward curve (ZIP, daily).
     """
-    today   = date.today()
+    today   = datetime.now(_CEST).date()
     boe_rate = scrape_boe_rate()
 
     anchor_sym  = f"ICEEUR:SO3{_FF_MONTH[today.month]}{today.year}"
@@ -1038,7 +1041,7 @@ def _boe_ois_fallback(meetings: list[str]) -> "list[float] | None":
         return None
 
     import io, zipfile
-    today = date.today()
+    today = datetime.now(_CEST).date()
 
     # Try current-month file first; fall back to annual history file
     for zip_url in [
@@ -1111,7 +1114,7 @@ def fetch_ca_implied_rates(meetings: list[str]) -> "list | None":
     Same anchoring approach as ECB EURIBOR.
     Fallback: BOC Valet CORRA overnight + 2Y bond interpolation.
     """
-    today    = date.today()
+    today    = datetime.now(_CEST).date()
     boc_rate = scrape_boc_rate()
 
     # Request the nearest 6 quarterly contracts spanning the meeting window
@@ -1163,7 +1166,7 @@ def fetch_ca_implied_rates(meetings: list[str]) -> "list | None":
 
 def _boc_corra_2y_fallback(meetings: list[str]) -> "list[float] | None":
     """BOC Valet CORRA overnight + 2Y bond fallback (returns plain floats)."""
-    today = date.today()
+    today = datetime.now(_CEST).date()
     valet = "https://www.bankofcanada.ca/valet/observations/{}/json?recent=5"
 
     def boc_latest(series: str) -> "float | None":
@@ -1210,7 +1213,7 @@ def fetch_au_implied_rates(meetings: list[str]) -> "list | None":
     No spread adjustment needed — these settle directly to the RBA cash rate.
     Fallback: RBA F01 BABs/NCDs with BBSW-OIS spread adjustment.
     """
-    today    = date.today()
+    today    = datetime.now(_CEST).date()
 
     contract_specs = []
     for mtg_str in meetings:
@@ -1269,7 +1272,7 @@ def _rba_babs_fallback(meetings: list[str]) -> "list[float] | None":
         return None
 
     import io
-    today = date.today()
+    today = datetime.now(_CEST).date()
     url   = "https://www.rba.gov.au/statistics/tables/xls/f01d.xlsx"
     try:
         resp = requests.get(url, headers=HTTP_HEADERS, timeout=20)
@@ -1407,7 +1410,7 @@ def fetch_jp_implied_rates(meetings: list[str]) -> "list | None":
     Spread calibration: nearest contract's implied 3M-TONA minus current BOJ rate.
     Fallback: return None → dashboard uses DRIFT model.
     """
-    today    = date.today()
+    today    = datetime.now(_CEST).date()
     boj_rate = scrape_boj_rate()
 
     # Request up to 8 quarterly contracts spanning ~2 years
@@ -1632,7 +1635,7 @@ def save_history(history: dict) -> None:
 def _trim_sort(snapshots: list) -> list:
     """Remove entries older than HISTORY_MAX_DAYS and sort ascending."""
     from datetime import timedelta
-    cutoff = (date.today() - timedelta(days=HISTORY_MAX_DAYS)).strftime("%Y-%m-%d")
+    cutoff = (datetime.now(_CEST).date() - timedelta(days=HISTORY_MAX_DAYS)).strftime("%Y-%m-%d")
     kept = [s for s in snapshots if _hist_sort_key(s.get("date", "")) >= cutoff]
     kept.sort(key=lambda s: _hist_sort_key(s.get("date", "")))
     return kept
@@ -1751,7 +1754,7 @@ def fetch_us_history_yfinance(meetings: list) -> list:
         return []
 
     from datetime import timedelta
-    start = (date.today() - timedelta(days=HISTORY_MAX_DAYS)).strftime("%Y-%m-%d")
+    start = (datetime.now(_CEST).date() - timedelta(days=HISTORY_MAX_DAYS)).strftime("%Y-%m-%d")
     by_date: dict = {}
 
     for i, mtg_str in enumerate(meetings):
@@ -1798,7 +1801,7 @@ def downsample_for_html(snapshots: list) -> list:
     Keeps: all of last 90 days daily, then every 7th (weekly) before that.
     """
     from datetime import timedelta
-    cutoff_daily = (date.today() - timedelta(days=90)).strftime("%Y-%m-%d")
+    cutoff_daily = (datetime.now(_CEST).date() - timedelta(days=90)).strftime("%Y-%m-%d")
     result = []
     sparse_counter = 0
     for s in snapshots:  # already sorted oldest→newest
@@ -1819,7 +1822,7 @@ def fetch_eu_history_ecb(meetings: list) -> list:
     Returns [{date: 'DD Mon YYYY', impliedRates: [r0, r1, ...]}, ...].
     """
     from datetime import timedelta
-    start = (date.today() - timedelta(days=HISTORY_MAX_DAYS)).strftime("%Y-%m-%d")
+    start = (datetime.now(_CEST).date() - timedelta(days=HISTORY_MAX_DAYS)).strftime("%Y-%m-%d")
 
     # ── Fetch ECB DFR history ─────────────────────────────────────────────────
     dfr_by_date: dict = {}
@@ -2104,7 +2107,7 @@ def main() -> None:
     log.info("WIRP updater starting  (dry-run=%s)", args.dry_run)
 
     markets, errors = fetch_all_data()
-    timestamp = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+    timestamp = datetime.now(_CEST).strftime("%d %b %Y %H:%M %Z")
 
     if args.dry_run:
         print("\n-- Scraped data --------------------------------------------------")
@@ -2116,7 +2119,7 @@ def main() -> None:
 
     # ── History management ────────────────────────────────────────────────────
     history = load_history()
-    today_str = date.today().strftime("%d %b %Y")
+    today_str = datetime.now(_CEST).date().strftime("%d %b %Y")
 
     for code in ALL_MARKETS:
         if code not in history:
