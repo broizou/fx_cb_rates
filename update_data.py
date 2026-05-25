@@ -88,7 +88,7 @@ META = {
     "UK": {"name": "Bank of England",           "abbr": "MPC",    "region": "Europe",   "live": True, "source": "ICE 3M SONIA futures (TradingView)"},
     "CA": {"name": "Bank of Canada",            "abbr": "BOC",    "region": "Americas", "live": True, "source": "TMX 3M CORRA futures (TradingView)"},
     "AU": {"name": "Reserve Bank of Australia", "abbr": "RBA",    "region": "Asia-Pac", "live": True, "source": "ASX 30-day IB cash rate futures (TradingView)"},
-    "JP": {"name": "Bank of Japan",             "abbr": "BOJ MPM","region": "Asia-Pac", "live": True, "source": "TONA OIS (TradingView / DRIFT fallback)"},
+    "JP": {"name": "Bank of Japan",             "abbr": "BOJ MPM","region": "Asia-Pac", "live": True, "source": "OSE 3M TONA futures (TradingView / DRIFT fallback)"},
 }
 
 # ── Hardcoded fallback data ───────────────────────────────────────────────────
@@ -1306,88 +1306,185 @@ def _rba_babs_fallback(meetings: list[str]) -> "list[float] | None":
         return None
 
 
-# ── JP: Bank of Japan — TONA OIS futures ─────────────────────────────────────
+# ── WebSocket-based price fetcher (for exchanges not in the scanner API) ────────
 
-# TONA futures on TFX use the same month codes as CME ZQ
-_TONA_MONTH = _FF_MONTH  # same convention
+def _tradingview_ws_prices(tickers: list, timeout: int = 25) -> "dict | None":
+    """
+    Fetch latest close prices for a list of TradingView symbols via WebSocket.
+    Works for exchanges not supported by the scanner API (e.g. OSE, TFX).
+    Returns {symbol: implied_rate} where implied_rate = 100 - close, or None on failure.
+    Runs one WebSocket connection per ticker in parallel threads.
+    """
+    try:
+        import websocket as _ws
+        import threading, string, random
+    except ImportError:
+        log.debug("  WS prices: websocket-client not installed")
+        return None
+
+    results: dict = {}
+    lock = threading.Lock()
+
+    def _fetch_one(symbol: str):
+        price: "float | None" = None
+        done = threading.Event()
+        sess = 'cs_' + ''.join(random.choices(string.ascii_lowercase, k=12))
+
+        def _send(ws, func, args):
+            msg = json.dumps({'m': func, 'p': args})
+            ws.send(f'~m~{len(msg)}~m~{msg}')
+
+        def _on_msg(ws, message):
+            nonlocal price
+            for part in message.split('~m~'):
+                if not part.startswith('{'):
+                    continue
+                try:
+                    d = json.loads(part)
+                except Exception:
+                    continue
+                m = d.get('m', '')
+                if m == 'timescale_update':
+                    bars = d.get('p', [{}])[1].get('s1', {}).get('s', [])
+                    if bars:
+                        close = bars[-1]['v'][4]
+                        price = round(100.0 - float(close), 4)
+                    done.set()
+                    ws.close()
+                elif m in ('symbol_error', 'series_error'):
+                    log.debug('  TV WS: %s — %s', symbol, d.get('p', ''))
+                    done.set()
+                    ws.close()
+
+        def _on_open(ws):
+            _send(ws, 'set_auth_token', ['unauthorized_user_token'])
+            _send(ws, 'chart_create_session', [sess, ''])
+            _send(ws, 'switch_timezone', [sess, 'UTC'])
+            _send(ws, 'resolve_symbol', [sess, 'sds_sym_1', f'={{"symbol":"{symbol}"}}'])
+            _send(ws, 'create_series', [sess, 's1', 's1', 'sds_sym_1', 'D', 3, ''])
+
+        try:
+            wsa = _ws.WebSocketApp(
+                'wss://data.tradingview.com/socket.io/websocket',
+                on_open=_on_open, on_message=_on_msg,
+                header={'Origin': 'https://www.tradingview.com'},
+            )
+            t = threading.Thread(target=wsa.run_forever, daemon=True)
+            t.start()
+            done.wait(timeout=timeout)
+            wsa.close()
+        except Exception as exc:
+            log.debug('  TV WS %s: %s', symbol, exc)
+
+        if price is not None:
+            with lock:
+                results[symbol] = price
+
+    threads = [threading.Thread(target=_fetch_one, args=(sym,), daemon=True) for sym in tickers]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=timeout + 2)
+
+    return results if results else None
+
+
+# ── JP: Bank of Japan — 3-Month TONA futures (Osaka Exchange, quarterly) ──────
+#
+# OSE 3-month TONA futures (launched May 2023) are the Japanese equivalent of
+# EURIBOR / SONIA futures.  Quarterly contracts: Mar=H, Jun=M, Sep=U, Dec=Z.
+# Settlement = 100 − (compounded 3-month TONA).
+# Spread calibration: same approach as ECB EURIBOR / BOC CORRA.
+# TradingView symbol: OSE:TOA3M{M}{YYYY}
+
+_TONA_QUARTERLY = {3: 'H', 6: 'M', 9: 'U', 12: 'Z'}
+
 
 def fetch_jp_implied_rates(meetings: list[str]) -> "list | None":
     """
-    Primary: TFX TONA overnight rate futures via TradingView (TFX:TONA{M}{YYYY}).
-    Uses post-meeting-month contract (same convention as ZQ / ASX IB).
-    No spread adjustment — TONA settles directly to the uncollateralized call rate.
+    Primary: OSE 3-month TONA futures (OSE:TOA3M{M}{YYYY}) via TradingView.
+    Quarterly contracts only — non-quarterly meetings are interpolated (is_interp=True).
+    Spread calibration: nearest contract's implied 3M-TONA minus current BOJ rate.
     Fallback: return None → dashboard uses DRIFT model.
     """
-    today = date.today()
+    today    = date.today()
+    boj_rate = scrape_boj_rate()
 
-    contract_specs = []
-    for mtg_str in meetings:
-        try:
-            mtg = datetime.strptime(mtg_str, "%d %b %Y").date()
-        except ValueError:
-            return None
-        post_month = mtg.month + 1
-        post_year  = mtg.year
-        if post_month > 12:
-            post_month = 1
-            post_year += 1
-        tv_sym = f"TFX:TONA{_TONA_MONTH[post_month]}{post_year}"
-        contract_specs.append((mtg_str, tv_sym))
+    # Request up to 8 quarterly contracts spanning ~2 years
+    syms = []
+    for yr in [today.year, today.year + 1]:
+        for m, mc in _TONA_QUARTERLY.items():
+            if date(yr, m, 15) >= today - __import__('datetime').timedelta(days=30):
+                syms.append(f"OSE:TOA3M{mc}{yr}")
+    syms = syms[:8]
 
-    all_syms = list(dict.fromkeys(s for _, s in contract_specs))
-    log.info("  JP implied: TONA futures batch — %s", all_syms)
-    tv_prices = _tradingview_ff_prices(all_syms)
+    log.info("  JP implied: OSE 3M TONA futures batch (scanner) — %s", syms)
+    tv_prices = _tradingview_ff_prices(syms)
+
+    # Scanner API doesn't cover OSE — fall back to WebSocket API
+    if not tv_prices or len(tv_prices) < 2:
+        log.info("  JP implied: scanner returned no data — trying WebSocket API")
+        tv_prices = _tradingview_ws_prices(syms)
 
     if tv_prices and len(tv_prices) >= 2:
-        results = []
-        for mtg_str, tv_sym in contract_specs:
-            if tv_sym in tv_prices:
-                implied = round(100.0 - tv_prices[tv_sym], 4)
-                log.info("  JP TONA implied[%s]: %s=%.4f%% -> %.4f%%",
-                         mtg_str, tv_sym, tv_prices[tv_sym], implied)
-                results.append((implied, False))
-            else:
-                log.warning("  JP implied[%s]: %s missing — interpolating", mtg_str, tv_sym)
-                curve = []
-                for sym, price in tv_prices.items():
-                    code = sym[len("TFX:TONA"):]
-                    mc, yr = code[0], int(code[1:])
-                    month = next(m for m, c in _TONA_MONTH.items() if c == mc)
-                    t = max((date(yr, month, 15) - today).days / 365.0, 0.001)
-                    curve.append((t, round(100.0 - price, 4)))
-                curve.sort()
-                interped = _interpolate_curve(curve, [mtg_str], "JP TONA interp")
-                results.append((interped[0] if interped else None, True))
-        if all(r is not None for r, _ in results):
-            return results
+        # Build implied TONA curve: (tenor_years, implied_3m_tona)
+        tona_curve = []
+        for sym, price in tv_prices.items():
+            code = sym[len("OSE:TOA3M"):]
+            mc, yr = code[0], int(code[1:])
+            month = next(m for m, c in _TONA_QUARTERLY.items() if c == mc)
+            t = max((date(yr, month, 15) - today).days / 365.0, 0.001)
+            tona_curve.append((t, round(100.0 - price, 4)))
+        tona_curve.sort()
 
-    log.warning("  JP implied: TradingView TONA not available — using DRIFT")
+        # Anchor: spread = nearest contract's implied 3M-TONA − current policy rate
+        spread = tona_curve[0][1] - boj_rate
+        log.info("  JP implied: TONA-BOJ spread (calibrated) = %.2fbps", spread * 100)
+        adjusted = [(t, r - spread) for t, r in tona_curve]
+
+        available_qtr = set()
+        for sym in tv_prices:
+            code = sym[len("OSE:TOA3M"):]
+            mc, yr = code[0], int(code[1:])
+            available_qtr.add((yr, next(m for m, c in _TONA_QUARTERLY.items() if c == mc)))
+
+        rates = _interpolate_curve(adjusted, meetings, "JP TONA")
+        if rates is not None:
+            result = []
+            for r, mtg in zip(rates, meetings):
+                mtg_d = datetime.strptime(mtg, "%d %b %Y")
+                is_interp = (mtg_d.year, mtg_d.month) not in available_qtr
+                result.append((r, is_interp))
+            return result
+
+    log.warning("  JP implied: OSE TONA futures not available — using DRIFT")
     return None
 
 
 def fetch_jp_history_tradingview(meetings: list) -> list:
     """
-    Backfill JP BOJ history via TradingView (TFX TONA futures).
-    Uses post-month contract (same convention as ZQ).
+    Backfill JP BOJ history via TradingView (OSE 3M TONA quarterly futures).
+    Each meeting uses the next quarterly contract on or after the meeting month.
     """
+    def next_quarterly_sym(mtg: datetime) -> str:
+        yr, mo = mtg.year, mtg.month
+        for qm in sorted(_TONA_QUARTERLY):
+            if qm >= mo:
+                return f"OSE:TOA3M{_TONA_QUARTERLY[qm]}{yr}"
+        return f"OSE:TOA3M{_TONA_QUARTERLY[3]}{yr + 1}"
+
     meeting_syms = []
     for mtg_str in meetings:
         try:
             mtg = datetime.strptime(mtg_str, "%d %b %Y")
-            post_month = mtg.month + 1
-            post_year  = mtg.year
-            if post_month > 12:
-                post_month = 1
-                post_year += 1
-            sym = f"TFX:TONA{_TONA_MONTH[post_month]}{post_year}"
-            meeting_syms.append((mtg_str, sym))
+            meeting_syms.append((mtg_str, next_quarterly_sym(mtg)))
         except Exception:
             continue
     snaps = _fetch_history_tv_aligned(meeting_syms)
     if snaps:
         log.info("  JP hist TradingView: %d snapshots assembled", len(snaps))
         return snaps
-    log.warning("  JP hist TV: no TONA data available")
+    log.warning("  JP hist TV: no OSE TONA data available")
     return []
 
 
