@@ -133,7 +133,7 @@
         <div id="utcClock" style="text-align:right;">
             <div id="utcTime" style="font-size:1.4rem;font-weight:700;letter-spacing:0.04em;line-height:1;color:var(--amber);">00:00:00</div>
             <div id="utcDate" style="font-size:0.62rem;color:var(--text-mid);margin-top:2px;"></div>
-            <div style="font-size:0.52rem;color:var(--text-dim);margin-top:1px;letter-spacing:.06em;">LONDON</div>
+            <div style="font-size:0.52rem;color:var(--text-dim);margin-top:1px;letter-spacing:.06em;">PARIS</div>
         </div>
     </div>
 </div>
@@ -146,6 +146,8 @@
     <button class="tab-btn"        id="tab-CA"     onclick="switchTab('CA')">CA <span style="opacity:.5;font-size:.8em;">(BOC)</span></button>
     <button class="tab-btn"        id="tab-AU"     onclick="switchTab('AU')">AU <span style="opacity:.5;font-size:.8em;">(RBA)</span></button>
     <button class="tab-btn"        id="tab-JP"     onclick="switchTab('JP')">JP <span style="opacity:.5;font-size:.8em;">(BOJ)</span></button>
+    <button class="tab-btn"        id="tab-CH"     onclick="switchTab('CH')">CH <span style="opacity:.5;font-size:.8em;">(SNB)</span></button>
+    <button class="tab-btn"        id="tab-NZ"     onclick="switchTab('NZ')">NZ <span style="opacity:.5;font-size:.8em;">(RBNZ)</span></button>
     <button class="tab-btn"        id="tab-GLOBAL" onclick="switchTab('GLOBAL')" style="margin-left:10px;">Global</button>
     <div style="flex:1;border-bottom:1px solid var(--border-sub);min-width:10px;"></div>
     <div style="display:flex;align-items:center;gap:10px;padding:0 0 0 12px;border-bottom:1px solid var(--border-sub);">
@@ -206,7 +208,7 @@
 <!-- ══════════════ FOOTER ══════════════ -->
 <div style="background:var(--panel);border:1px solid var(--border);border-top:none;padding:9px 22px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
     <span style="font-size:0.57rem;color:var(--text-dim);">
-        Futures-implied rates. US: CME ZQ · EU: Eurex EURIBOR FEU3 · UK: ICE SONIA SO3 · CA: TMX CORRA CRA · AU: ASX IB · JP: OSE 3M TONA. Updated hourly.
+        Futures-implied rates. US: CME ZQ · EU: Eurex EURIBOR FEU3 · UK: ICE SONIA SO3 · CA: TMX CORRA CRA · AU: ASX IB · JP: OSE 3M TONA · CH: Eurex SARON FSR3 · NZ: DRIFT. Updated weekly.
     </span>
     <div style="display:flex;gap:14px;align-items:center;">
         <span style="font-size:0.57rem;"><span style="color:var(--green);">▲ Hike</span>&nbsp;&nbsp;<span style="color:var(--red);">▼ Cut</span>&nbsp;&nbsp;<span style="color:var(--amber);">━ Hold</span></span>
@@ -507,7 +509,7 @@ function renderTable(code, flash = false) {
 }
 
 // ── Global multi-market implied path chart ──
-const MARKET_COLORS = {US:'#d97706', EU:'#2563eb', UK:'#7c3aed', CA:'#dc2626', AU:'#16a34a', JP:'#0891b2'};
+const MARKET_COLORS = {US:'#d97706', EU:'#2563eb', UK:'#7c3aed', CA:'#dc2626', AU:'#16a34a', JP:'#0891b2', CH:'#be123c', NZ:'#059669'};
 
 function renderGlobalChart() {
     const el = document.getElementById('globalChartArea');
@@ -522,7 +524,7 @@ function renderGlobalChart() {
     // Collect all data points: {code, ts, bps}
     let allBps = [0], maxTs = todayTs;
     const marketPoints = {};
-    ['US','EU','UK','CA','AU','JP'].forEach(code => {
+    ['US','EU','UK','CA','AU','JP','CH','NZ'].forEach(code => {
         const data = cachedData[code];
         if (!data?.length) return;
         const pts = data.map(d => ({
@@ -557,7 +559,7 @@ function renderGlobalChart() {
 
     // Lines per market
     let lines = '', labels = '';
-    ['US','EU','UK','CA','AU','JP'].forEach(code => {
+    ['US','EU','UK','CA','AU','JP','CH','NZ'].forEach(code => {
         const pts = marketPoints[code];
         if (!pts?.length) return;
         const isHl = code === globalHighlight;
