@@ -2181,10 +2181,10 @@
         2.0868,
         2.1895,
         2.2865,
-        2.3263,
-        2.359,
-        2.385,
-        2.385
+        2.3261,
+        2.3533,
+        2.375,
+        2.375
       ],
       "impliedRatesInterp": [
         false,
@@ -4284,10 +4284,10 @@
             2.0868,
             2.1895,
             2.2865,
-            2.3263,
-            2.359,
-            2.385,
-            2.385
+            2.3261,
+            2.3533,
+            2.375,
+            2.375
           ]
         }
       ]
@@ -6443,12 +6443,12 @@
       "source": "TMX 3M CORRA futures (TradingView)",
       "impliedRates": [
         2.25,
-        2.2989,
-        2.3902,
-        2.4791,
-        2.5868,
-        2.6678,
-        2.7448
+        2.2973,
+        2.3855,
+        2.4741,
+        2.5818,
+        2.6628,
+        2.7398
       ],
       "impliedRatesInterp": [
         false,
@@ -8240,12 +8240,12 @@
           "date": "25 May 2026",
           "impliedRates": [
             2.25,
-            2.2989,
-            2.3902,
-            2.4791,
-            2.5868,
-            2.6678,
-            2.7448
+            2.2973,
+            2.3855,
+            2.4741,
+            2.5818,
+            2.6628,
+            2.7398
           ]
         }
       ]
@@ -9497,10 +9497,10 @@
         0.8112,
         0.8778,
         0.9516,
-        1.0378,
-        1.0998,
-        1.1991,
-        1.2699
+        1.0371,
+        1.0906,
+        1.178,
+        1.2585
       ],
       "impliedRatesInterp": [
         false,
@@ -9509,7 +9509,7 @@
         true,
         false,
         true,
-        true,
+        false,
         true
       ],
       "history": [
@@ -11535,10 +11535,10 @@
             0.8112,
             0.8778,
             0.9516,
-            1.0378,
-            1.0998,
-            1.1991,
-            1.2699
+            1.0371,
+            1.0906,
+            1.178,
+            1.2585
           ]
         }
       ]
@@ -13678,10 +13678,45 @@
       "name": "Reserve Bank of New Zealand",
       "abbr": "RBNZ MPC",
       "region": "Asia-Pac",
-      "live": false,
-      "source": "DRIFT fallback (no liquid futures on TradingView)",
-      "history": []
+      "live": true,
+      "source": "ASX NZ 90-Day B.A. futures via Barchart (BF{M}{YY})",
+      "history": [
+        {
+          "date": "25 May 2026",
+          "impliedRates": [
+            3.4616,
+            3.6685,
+            3.8531,
+            4.1113,
+            4.2727,
+            4.3739,
+            4.4609,
+            4.5035
+          ]
+        }
+      ],
+      "noMarketData": true,
+      "impliedRates": [
+        3.4616,
+        3.6685,
+        3.8531,
+        4.1113,
+        4.2727,
+        4.3739,
+        4.4609,
+        4.5035
+      ],
+      "impliedRatesInterp": [
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true
+      ]
     }
   },
-  "last_updated": "25 May 2026 17:48 CEST"
+  "last_updated": "25 May 2026 18:04 CEST"
 }
