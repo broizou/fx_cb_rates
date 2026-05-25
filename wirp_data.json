@@ -9493,23 +9493,23 @@
       "live": true,
       "source": "OSE 3M TONA futures (TradingView / DRIFT fallback)",
       "impliedRates": [
-        0.75,
-        0.75,
-        0.7553,
-        0.8291,
-        0.9146,
-        0.9681,
-        1.0555,
-        1.136
+        0.7513,
+        0.8112,
+        0.8778,
+        0.9516,
+        1.0378,
+        1.0998,
+        1.1991,
+        1.2699
       ],
       "impliedRatesInterp": [
-        true,
-        true,
         false,
         true,
         false,
         true,
         false,
+        true,
+        true,
         true
       ],
       "history": [
@@ -11531,14 +11531,14 @@
         {
           "date": "25 May 2026",
           "impliedRates": [
-            0.75,
-            0.75,
-            0.7553,
-            0.8291,
-            0.9146,
-            0.9681,
-            1.0555,
-            1.136
+            0.7513,
+            0.8112,
+            0.8778,
+            0.9516,
+            1.0378,
+            1.0998,
+            1.1991,
+            1.2699
           ]
         }
       ]
@@ -13680,43 +13680,8 @@
       "region": "Asia-Pac",
       "live": false,
       "source": "DRIFT fallback (no liquid futures on TradingView)",
-      "history": [
-        {
-          "date": "25 May 2026",
-          "impliedRates": [
-            3.25,
-            3.25,
-            3.25,
-            3.25,
-            3.25,
-            3.25,
-            3.25,
-            3.25
-          ]
-        }
-      ],
-      "impliedRates": [
-        3.25,
-        3.25,
-        3.25,
-        3.25,
-        3.25,
-        3.25,
-        3.25,
-        3.25
-      ],
-      "impliedRatesInterp": [
-        true,
-        true,
-        true,
-        true,
-        true,
-        true,
-        true,
-        true
-      ],
-      "noMarketData": true
+      "history": []
     }
   },
-  "last_updated": "25 May 2026 16:32 CEST"
+  "last_updated": "25 May 2026 16:35 CEST"
 }
