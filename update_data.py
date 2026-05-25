@@ -1826,9 +1826,21 @@ def fetch_all_data() -> tuple[dict, list[str]]:
                              [f"{r:.3f}" for r in rates])
                 else:
                     log.info("  %s impliedRates: fetcher returned None — "
-                             "dashboard will use DRIFT model", code)
+                             "computing DRIFT path", code)
             except Exception as exc:
-                log.warning("  %s impliedRates failed (%s) — using DRIFT", code, exc)
+                log.warning("  %s impliedRates failed (%s) — computing DRIFT path", code, exc)
+
+        # ── DRIFT fallback: inject a linear path if no implied rates yet ─────────
+        if "impliedRates" not in result[code]:
+            n     = len(result[code].get("meetings", []))
+            rate  = result[code].get("rate", 0.0)
+            drift = DRIFT.get(code, 0.0)
+            if n > 0:
+                implied = [round(rate + drift * i / max(n - 1, 1), 4) for i in range(n)]
+                result[code]["impliedRates"]       = implied
+                result[code]["impliedRatesInterp"] = [True] * n
+                log.info("  %s impliedRates (DRIFT=%.2f%%): %s",
+                         code, drift, [f"{r:.3f}" for r in implied])
 
     return result, errors
 
