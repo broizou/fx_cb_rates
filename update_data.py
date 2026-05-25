@@ -2461,6 +2461,136 @@ def save_json(markets: dict, timestamp: str) -> None:
     log.info("Saved -> %s", JSON_FILE)
 
 
+_GLOBAL_TAB_HTML = '    <button class="tab-btn"        id="tab-GLOBAL" onclick="switchTab(\'GLOBAL\')" style="margin-right:10px;">Global</button>\n'
+_GLOBAL_TAB_WRONG = '    <button class="tab-btn"        id="tab-GLOBAL" onclick="switchTab(\'GLOBAL\')" style="margin-left:10px;">Global</button>\n'
+
+_RENDERGLOBAL_BAD = (
+    "    const todayTs = (() => { const d = new Date(); d.setUTCHours(0,0,0,0); return d.getTime(); })();\n"
+    "\n"
+    "    // Collect all data points: {code, ts, bps}\n"
+    "    let allBps = [0], maxTs = todayTs;\n"
+    "    const marketPoints = {};\n"
+    "    ['US','EU','UK','CA','AU','JP','CH','NZ'].forEach(code => {\n"
+    "        const data = cachedData[code];\n"
+    "        if (!data?.length) return;\n"
+    "        const pts = data.map(d => ({\n"
+    "            ts:  parseMeetingDate(d.meeting).getTime(),\n"
+    "            bps: d.impliedChangeBps,\n"
+    "        }));\n"
+    "        marketPoints[code] = pts;\n"
+    "        pts.forEach(p => { allBps.push(p.bps); maxTs = Math.max(maxTs, p.ts); });\n"
+    "    });"
+)
+_RENDERGLOBAL_GOOD = (
+    "    const todayTs  = (() => { const d = new Date(); d.setUTCHours(0,0,0,0); return d.getTime(); })();\n"
+    "    const maxTs12M = todayTs + 365 * 24 * 3600 * 1000;  // hard cap at 12 months\n"
+    "\n"
+    "    // Collect data points within 12 months: {code, ts, bps}\n"
+    "    let allBps = [0];\n"
+    "    const marketPoints = {};\n"
+    "    ['US','EU','UK','CA','AU','JP','CH','NZ'].forEach(code => {\n"
+    "        const data = cachedData[code];\n"
+    "        if (!data?.length) return;\n"
+    "        const pts = data\n"
+    "            .filter(d => parseMeetingDate(d.meeting).getTime() <= maxTs12M)\n"
+    "            .map(d => ({ ts: parseMeetingDate(d.meeting).getTime(), bps: d.impliedChangeBps }));\n"
+    "        if (!pts.length) return;\n"
+    "        marketPoints[code] = pts;\n"
+    "        pts.forEach(p => allBps.push(p.bps));\n"
+    "    });"
+)
+
+_RENDERGLOBAL_XS_BAD  = "    const xS = ts => PAD.l + ((ts - todayTs) / Math.max(maxTs - todayTs, 1)) * cw;"
+_RENDERGLOBAL_XS_GOOD = "    const xS = ts => PAD.l + ((ts - todayTs) / (maxTs12M - todayTs)) * cw;"
+
+_GRIDLINES_MARKER = '    g += `<text x="${PAD.l}" y="${H-PAD.b+14}" text-anchor="middle" font-size="8" fill="var(--amber)" font-family="JetBrains Mono,monospace">Today</text>`;\n'
+_GRIDLINES_ADDITION = (
+    '    // x-axis month labels at 3M, 6M, 9M, 12M\n'
+    '    [3, 6, 9, 12].forEach(mo => {\n'
+    "        const ts = todayTs + mo * 30.44 * 24 * 3600 * 1000;\n"
+    "        const x  = xS(ts);\n"
+    '        g += `<line x1="${x}" y1="${PAD.t}" x2="${x}" y2="${H-PAD.b}" stroke="var(--border-sub)" stroke-width="1" stroke-dasharray="2,3"/>`;\n'
+    '        g += `<text x="${x}" y="${H-PAD.b+14}" text-anchor="middle" font-size="8" fill="var(--text-dim)" font-family="JetBrains Mono,monospace">${mo}M</text>`;\n'
+    '    });\n'
+)
+
+_NO_MARKET_DATA_BAD  = "    cachedData[code]  = generateData(code);\n    renderAll(code, false);\n}\n"
+_NO_MARKET_DATA_GOOD = (
+    "    cachedData[code]  = generateData(code);\n"
+    "    renderAll(code, false);\n"
+    "\n"
+    "    // For markets with no real futures data, overlay a notice on the chart\n"
+    "    if (markets[code]?.noMarketData) {\n"
+    "        const svg = document.getElementById('chartSvg');\n"
+    "        if (svg) {\n"
+    "            const notice = document.createElementNS('http://www.w3.org/2000/svg', 'text');\n"
+    "            notice.setAttribute('x', '50%');\n"
+    "            notice.setAttribute('y', '44%');\n"
+    "            notice.setAttribute('text-anchor', 'middle');\n"
+    "            notice.setAttribute('dominant-baseline', 'middle');\n"
+    "            notice.setAttribute('font-size', '11');\n"
+    "            notice.setAttribute('fill', 'var(--text-dim)');\n"
+    "            notice.setAttribute('font-family', 'Inter,sans-serif');\n"
+    "            notice.textContent = 'No market data — rate path unavailable';\n"
+    "            svg.appendChild(notice);\n"
+    "        }\n"
+    "    }\n"
+    "}\n"
+)
+
+_FOOTER_NZ_DRIFT   = "NZ: DRIFT."
+_FOOTER_NZ_CORRECT = "NZ: ASX B.A. futures (Barchart)."
+
+
+def _patch_wirp_structure(html: str) -> str:
+    """
+    Re-apply structural JS/HTML fixes that a git merge can accidentally revert.
+    Called from inject_html() on every run so they are permanently maintained.
+    """
+    patched = False
+
+    # 1. Global tab: must be the FIRST tab button (margin-right, before tab-US)
+    us_btn = '    <button class="tab-btn active" id="tab-US"'
+    if _GLOBAL_TAB_WRONG in html:
+        html = html.replace(_GLOBAL_TAB_WRONG, "")
+        html = html.replace(us_btn, _GLOBAL_TAB_HTML + us_btn)
+        log.info("  patch wirp: restored Global tab to leftmost position")
+        patched = True
+    elif _GLOBAL_TAB_HTML not in html and us_btn in html:
+        html = html.replace(us_btn, _GLOBAL_TAB_HTML + us_btn)
+        log.info("  patch wirp: inserted Global tab before US tab")
+        patched = True
+
+    # 2. renderGlobalChart: hard-cap x-axis at 12 months
+    if _RENDERGLOBAL_BAD in html:
+        html = html.replace(_RENDERGLOBAL_BAD, _RENDERGLOBAL_GOOD)
+        html = html.replace(_RENDERGLOBAL_XS_BAD, _RENDERGLOBAL_XS_GOOD)
+        log.info("  patch wirp: restored renderGlobalChart 12M cap")
+        patched = True
+
+    # 3. renderGlobalChart: 3M/6M/9M/12M vertical gridlines
+    if _GRIDLINES_MARKER in html and _GRIDLINES_ADDITION not in html:
+        html = html.replace(_GRIDLINES_MARKER, _GRIDLINES_MARKER + _GRIDLINES_ADDITION)
+        log.info("  patch wirp: restored 3M/6M/9M/12M gridlines")
+        patched = True
+
+    # 4. switchTab: noMarketData overlay banner
+    if _NO_MARKET_DATA_BAD in html and "noMarketData" not in html:
+        html = html.replace(_NO_MARKET_DATA_BAD, _NO_MARKET_DATA_GOOD)
+        log.info("  patch wirp: restored noMarketData banner")
+        patched = True
+
+    # 5. Footer: NZ source label
+    if _FOOTER_NZ_DRIFT in html:
+        html = html.replace(_FOOTER_NZ_DRIFT, _FOOTER_NZ_CORRECT)
+        log.info("  patch wirp: updated NZ footer source label")
+        patched = True
+
+    if not patched:
+        log.info("  patch wirp: all structural checks passed — no changes needed")
+    return html
+
+
 def inject_html(markets: dict, timestamp: str) -> bool:
     if not os.path.exists(HTML_FILE):
         log.error("wirp.html not found: %s", HTML_FILE)
@@ -2482,6 +2612,7 @@ def inject_html(markets: dict, timestamp: str) -> bool:
         f"{DATA_END}"
     )
     updated = html[:bi] + block + html[ei + len(DATA_END):]
+    updated = _patch_wirp_structure(updated)
     with open(HTML_FILE, "w", encoding="utf-8") as f:
         f.write(updated)
     log.info("Injected -> %s", HTML_FILE)
