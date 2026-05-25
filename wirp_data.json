@@ -19,7 +19,7 @@
       "source": "CME ZQ futures (TradingView / Yahoo Finance)",
       "impliedRates": [
         3.63,
-        3.645,
+        3.65,
         3.7,
         3.725,
         3.795,
@@ -2148,7 +2148,7 @@
           "date": "25 May 2026",
           "impliedRates": [
             3.63,
-            3.645,
+            3.65,
             3.7,
             3.725,
             3.795,
@@ -6443,12 +6443,12 @@
       "source": "TMX 3M CORRA futures (TradingView)",
       "impliedRates": [
         2.25,
-        2.2973,
-        2.3855,
-        2.4741,
-        2.5818,
-        2.6628,
-        2.7398
+        2.2989,
+        2.3902,
+        2.4752,
+        2.5775,
+        2.6599,
+        2.7392
       ],
       "impliedRatesInterp": [
         false,
@@ -8240,12 +8240,12 @@
           "date": "25 May 2026",
           "impliedRates": [
             2.25,
-            2.2973,
-            2.3855,
-            2.4741,
-            2.5818,
-            2.6628,
-            2.7398
+            2.2989,
+            2.3902,
+            2.4752,
+            2.5775,
+            2.6599,
+            2.7392
           ]
         }
       ]
@@ -13695,7 +13695,6 @@
           ]
         }
       ],
-      "noMarketData": true,
       "impliedRates": [
         3.4616,
         3.6685,
@@ -13718,5 +13717,5 @@
       ]
     }
   },
-  "last_updated": "25 May 2026 18:04 CEST"
+  "last_updated": "25 May 2026 18:14 CEST"
 }
