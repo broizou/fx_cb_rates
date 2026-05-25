@@ -1746,8 +1746,8 @@ def fetch_nz_implied_rates(meetings: list[str]) -> "list | None":
     try:
         rbnz_rate = scrape_rbnz_rate()
     except Exception as exc:
-        log.warning("  NZ implied: RBNZ rate unavailable (%s) — using DRIFT", exc)
-        return None
+        rbnz_rate = FALLBACK["NZ"]["rate"]
+        log.warning("  NZ implied: RBNZ rate unavailable (%s) — using fallback %.4f%%", exc, rbnz_rate)
 
     # Generate quarterly symbols covering today + ~18 months
     syms = []
