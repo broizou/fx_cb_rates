@@ -945,10 +945,10 @@ function setMarketSectionsVisible(visible) {
 // ── Tab switch ──
 function switchTab(code) {
     const isGlobal = code === 'GLOBAL';
-    // Update tab active states (market tabs + GLOBAL tab)
-    [...ALL_CODES, 'GLOBAL'].forEach(c => {
-        const b = document.getElementById(`tab-${c}`);
-        if (b) b.classList.toggle('active', c === code);
+    // Update tab active states — iterate all .tab-btn elements so CH/NZ buttons
+    // get highlighted even before their market data has been injected by the workflow.
+    document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.toggle('active', b.id === `tab-${code}`);
     });
 
     if (isGlobal) {
@@ -958,6 +958,19 @@ function switchTab(code) {
         ALL_CODES.forEach(c => { if (!cachedData[c]?.length) cachedData[c] = generateData(c); });
         renderCrossMarket();
         document.getElementById('daysUntil').textContent = '';
+        return;
+    }
+
+    // Guard: market data not yet injected (workflow hasn't run for this market yet)
+    if (!markets[code]) {
+        isGlobalView = false;
+        setMarketSectionsVisible(true);
+        currentMarket = code;
+        document.getElementById('daysUntil').textContent = '';
+        const chartEl = document.getElementById('chartSvg');
+        if (chartEl) chartEl.innerHTML = '';
+        const strip = document.getElementById('summaryStrip');
+        if (strip) strip.innerHTML = `<div style="padding:24px 22px;color:var(--text-dim);font-size:0.72rem;">Data for ${code} will be available after the next scheduled update.</div>`;
         return;
     }
 
