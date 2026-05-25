@@ -80,6 +80,8 @@ DRIFT = {
     "CA": 0.00,
     "AU": 0.00,
     "JP": 0.00,
+    "CH": 0.00,
+    "NZ": 0.00,
 }
 
 # ── Static metadata ──────────────────────────────────────────────────────────
@@ -91,7 +93,9 @@ META = {
     "UK": {"name": "Bank of England",           "abbr": "MPC",    "region": "Europe",   "live": True, "source": "ICE 3M SONIA futures (TradingView)"},
     "CA": {"name": "Bank of Canada",            "abbr": "BOC",    "region": "Americas", "live": True, "source": "TMX 3M CORRA futures (TradingView)"},
     "AU": {"name": "Reserve Bank of Australia", "abbr": "RBA",    "region": "Asia-Pac", "live": True, "source": "ASX 30-day IB cash rate futures (TradingView)"},
-    "JP": {"name": "Bank of Japan",             "abbr": "BOJ MPM","region": "Asia-Pac", "live": True, "source": "OSE 3M TONA futures (TradingView / DRIFT fallback)"},
+    "JP": {"name": "Bank of Japan",             "abbr": "BOJ MPM","region": "Asia-Pac", "live": True,  "source": "OSE 3M TONA futures (TradingView / DRIFT fallback)"},
+    "CH": {"name": "Swiss National Bank",        "abbr": "SNB",    "region": "Europe",   "live": True,  "source": "Eurex 3M SARON futures (TradingView / DRIFT fallback)"},
+    "NZ": {"name": "Reserve Bank of New Zealand","abbr": "RBNZ MPC","region": "Asia-Pac","live": False, "source": "DRIFT fallback (no liquid futures on TradingView)"},
 }
 
 # ── Hardcoded fallback data ───────────────────────────────────────────────────
@@ -127,6 +131,16 @@ FALLBACK = {
         "rate": 0.75,
         "meetings": ["16 Jun 2026","31 Jul 2026","18 Sep 2026","30 Oct 2026",
                      "18 Dec 2026","22 Jan 2027","19 Mar 2027","28 Apr 2027"],
+    },
+    "CH": {
+        "rate": 0.00,
+        "meetings": ["18 Jun 2026","24 Sep 2026","10 Dec 2026",
+                     "18 Mar 2027","24 Jun 2027","23 Sep 2027","16 Dec 2027","18 Mar 2028"],
+    },
+    "NZ": {
+        "rate": 3.25,
+        "meetings": ["13 Aug 2026","08 Oct 2026","25 Nov 2026",
+                     "04 Feb 2027","26 Mar 2027","14 May 2027","09 Jul 2027","27 Aug 2027"],
     },
 }
 
@@ -674,6 +688,106 @@ def scrape_boj_rate() -> float:
             return rate
 
     raise ValueError("JP rate not found")
+
+
+# ── CH: Swiss National Bank ───────────────────────────────────────────────────
+
+def scrape_snb_meetings() -> list[str]:
+    """
+    SNB policy assessment calendar.
+    URL: https://www.snb.ch/en/services-events/digital-services/event-schedule
+    Format in <h3>: 'Monetary policy assessment of DD.MM.YYYY (Press release)'
+    Two entries per date (press release + news conference) — we deduplicate.
+    """
+    url  = "https://www.snb.ch/en/services-events/digital-services/event-schedule"
+    log.info("Fetching CH meetings: %s", url)
+    soup  = fetch(url)
+    today = datetime.now(_CEST).date()
+    seen: set[str] = set()
+    meetings: list[str] = []
+
+    for h3 in soup.find_all("h3"):
+        text = h3.get_text(" ", strip=True)
+        if "monetary policy assessment" not in text.lower():
+            continue
+        m = re.search(r"(\d{2}\.\d{2}\.\d{4})", text)
+        if not m:
+            continue
+        ds = m.group(1)
+        if ds in seen:
+            continue
+        seen.add(ds)
+        try:
+            dt = datetime.strptime(ds, "%d.%m.%Y").date()
+        except ValueError:
+            continue
+        if dt >= today:
+            meetings.append(dt.strftime("%d %b %Y"))
+        if len(meetings) == N_MEETINGS:
+            break
+
+    # Supplement with fallback if insufficient future dates scraped
+    if len(meetings) < N_MEETINGS:
+        fallback_dates = FALLBACK["CH"]["meetings"]
+        existing = set(meetings)
+        for fd in fallback_dates:
+            try:
+                dt = datetime.strptime(fd, "%d %b %Y").date()
+            except ValueError:
+                continue
+            if dt >= today and fd not in existing:
+                meetings.append(fd)
+            if len(meetings) == N_MEETINGS:
+                break
+        meetings.sort(key=lambda s: datetime.strptime(s, "%d %b %Y"))
+
+    log.info("  -> %d CH meetings", len(meetings))
+    return meetings[:N_MEETINGS]
+
+
+def scrape_snb_rate() -> float:
+    """
+    SNB homepage: 'SNB policy rate: X.XX%'
+    """
+    url = "https://www.snb.ch/en/"
+    log.info("Fetching CH rate: %s", url)
+    soup = fetch(url)
+    text = soup.get_text(" ", strip=True)
+
+    m = re.search(r"SNB policy rate[\s\S]{0,150}?([-\d.]+)\s*%", text)
+    if m:
+        rate = float(m.group(1))
+        if -5.0 <= rate <= 5.0:
+            log.info("  -> CH rate: %.4f%%", rate)
+            return rate
+    raise ValueError("CH rate not found")
+
+
+# ── NZ: Reserve Bank of New Zealand ──────────────────────────────────────────
+
+def scrape_rbnz_rate() -> float:
+    """
+    RBNZ OCR via FRED API (series RBNZOCR).
+    Website returns 403 — FRED is the reliable alternative.
+    """
+    if FRED_API_KEY:
+        try:
+            url = (
+                "https://api.stlouisfed.org/fred/series/observations"
+                f"?series_id=RBNZOCR&sort_order=desc&limit=3"
+                f"&file_type=json&api_key={FRED_API_KEY}"
+            )
+            r = requests.get(url, timeout=15)
+            r.raise_for_status()
+            for obs in r.json().get("observations", []):
+                v = obs.get("value", ".")
+                if v != ".":
+                    rate = round(float(v), 4)
+                    log.info("  -> NZ rate (FRED RBNZOCR): %.4f%%", rate)
+                    return rate
+        except Exception as exc:
+            log.warning("FRED RBNZOCR failed: %s — using fallback", exc)
+    raise ValueError("NZ rate not found (FRED unavailable)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1464,6 +1578,118 @@ def fetch_jp_implied_rates(meetings: list[str]) -> "list | None":
     return None
 
 
+# ── CH: Swiss National Bank — 3-Month SARON futures (Eurex FSR3, quarterly) ───
+#
+# Eurex 3-month SARON futures (symbol: FSR3).
+# Quarterly contracts only: Mar=H, Jun=M, Sep=U, Dec=Z.
+# TradingView symbol: EUREX:FSR3{M}{YYYY}
+# Settlement = 100 − compounded 3-month SARON (same convention as TONA/EURIBOR).
+# Spread calibration: nearest contract's implied 3M-SARON minus current SNB rate.
+
+_SARON_QUARTERLY = {3: 'H', 6: 'M', 9: 'U', 12: 'Z'}
+
+
+def fetch_ch_implied_rates(meetings: list[str]) -> "list | None":
+    """
+    Primary: Eurex 3M SARON futures (EUREX:FSR3{M}{YYYY}) via TradingView.
+    Tries scanner API first, then WebSocket API (same pattern as JP TONA).
+    Quarterly contracts only — non-quarterly meetings are interpolated (is_interp=True).
+    Spread calibration: nearest contract's implied 3M-SARON minus current SNB rate.
+    Fallback: return None → dashboard uses DRIFT model.
+    """
+    today    = datetime.now(_CEST).date()
+    snb_rate = scrape_snb_rate()
+
+    # Request up to 8 quarterly contracts spanning ~2 years
+    syms = []
+    for yr in [today.year, today.year + 1]:
+        for m, mc in _SARON_QUARTERLY.items():
+            if date(yr, m, 15) >= today - __import__('datetime').timedelta(days=30):
+                syms.append(f"EUREX:FSR3{mc}{yr}")
+    syms = syms[:8]
+
+    log.info("  CH implied: Eurex 3M SARON futures batch (scanner) — %s", syms)
+    tv_prices = _tradingview_ff_prices(syms)
+
+    # Scanner may not cover this Eurex product — fall back to WebSocket API
+    if not tv_prices or len(tv_prices) < 2:
+        log.info("  CH implied: scanner returned no data — trying WebSocket API")
+        tv_prices = _tradingview_ws_prices(syms)
+
+    if tv_prices and len(tv_prices) >= 2:
+        saron_curve = []
+        for sym, price in tv_prices.items():
+            code = sym[len("EUREX:FSR3"):]
+            mc, yr = code[0], int(code[1:])
+            month = next(m for m, c in _SARON_QUARTERLY.items() if c == mc)
+            t = max((date(yr, month, 15) - today).days / 365.0, 0.001)
+            saron_curve.append((t, round(100.0 - price, 4)))
+        saron_curve.sort()
+
+        spread = saron_curve[0][1] - snb_rate
+        log.info("  CH implied: SARON-SNB spread (calibrated) = %.2fbps", spread * 100)
+        adjusted = [(t, r - spread) for t, r in saron_curve]
+
+        available_qtr = set()
+        for sym in tv_prices:
+            code = sym[len("EUREX:FSR3"):]
+            mc, yr = code[0], int(code[1:])
+            available_qtr.add((yr, next(m for m, c in _SARON_QUARTERLY.items() if c == mc)))
+
+        rates = _interpolate_curve(adjusted, meetings, "CH SARON")
+        if rates is not None:
+            result = []
+            for r, mtg in zip(rates, meetings):
+                mtg_d = datetime.strptime(mtg, "%d %b %Y")
+                is_interp = (mtg_d.year, mtg_d.month) not in available_qtr
+                result.append((r, is_interp))
+            return result
+
+    log.warning("  CH implied: SARON futures not available — using DRIFT")
+    return None
+
+
+def fetch_nz_implied_rates(meetings: list[str]) -> "list | None":
+    """
+    No liquid NZX interest rate futures available on TradingView.
+    Returns None immediately so the dashboard uses the DRIFT model.
+    """
+    log.info("  NZ implied: no futures data source — using DRIFT model")
+    return None
+
+
+def fetch_ch_history_tradingview(meetings: list) -> list:
+    """
+    Backfill CH SNB history via TradingView (Eurex 3M SARON quarterly futures).
+    Each meeting uses the next quarterly contract on or after the meeting month.
+    """
+    def next_quarterly_sym(mtg: datetime) -> str:
+        yr, mo = mtg.year, mtg.month
+        for qm in sorted(_SARON_QUARTERLY):
+            if qm >= mo:
+                return f"EUREX:FSR3{_SARON_QUARTERLY[qm]}{yr}"
+        return f"EUREX:FSR3{_SARON_QUARTERLY[3]}{yr + 1}"
+
+    meeting_syms = []
+    for mtg_str in meetings:
+        try:
+            mtg = datetime.strptime(mtg_str, "%d %b %Y")
+            meeting_syms.append((mtg_str, next_quarterly_sym(mtg)))
+        except Exception:
+            continue
+    snaps = _fetch_history_tv_aligned(meeting_syms)
+    if snaps:
+        log.info("  CH hist TradingView: %d snapshots assembled", len(snaps))
+        return snaps
+    log.warning("  CH hist TV: no SARON data available")
+    return []
+
+
+def fetch_nz_history_tradingview(meetings: list) -> list:
+    """No futures data available for NZ — returns empty list."""
+    return []
+
+
 def fetch_jp_history_tradingview(meetings: list) -> list:
     """
     Backfill JP BOJ history via TradingView (OSE 3M TONA quarterly futures).
@@ -1500,6 +1726,8 @@ IMPLIED_RATE_FETCHERS: dict = {
     "CA": fetch_ca_implied_rates,
     "AU": fetch_au_implied_rates,
     "JP": fetch_jp_implied_rates,
+    "CH": fetch_ch_implied_rates,
+    "NZ": fetch_nz_implied_rates,
 }
 
 
@@ -1515,6 +1743,8 @@ LIVE_SCRAPERS = {
         "CA": scrape_boc_meetings,
         "AU": scrape_rba_meetings,
         "JP": scrape_boj_meetings,
+        "CH": scrape_snb_meetings,
+        # NZ intentionally omitted — RBNZ website returns 403
     },
     "rates": {
         "US": scrape_fed_rate,
@@ -1523,6 +1753,8 @@ LIVE_SCRAPERS = {
         "CA": scrape_boc_rate,
         "AU": scrape_rba_rate,
         "JP": scrape_boj_rate,
+        "CH": scrape_snb_rate,
+        "NZ": scrape_rbnz_rate,
     },
 }
 
@@ -2152,6 +2384,11 @@ def main() -> None:
             elif code == "JP":
                 log.info("  JP: sparse history — running TradingView backfill...")
                 backfill = fetch_jp_history_tradingview(markets["JP"]["meetings"])
+            elif code == "CH":
+                log.info("  CH: sparse history — running TradingView backfill...")
+                backfill = fetch_ch_history_tradingview(markets["CH"]["meetings"])
+            elif code == "NZ":
+                pass  # no futures data source for NZ
             if backfill:
                 existing = {s["date"] for s in history[code]}
                 new_snaps = [s for s in backfill if s["date"] not in existing]
