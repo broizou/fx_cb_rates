@@ -95,7 +95,7 @@ META = {
     "AU": {"name": "Reserve Bank of Australia", "abbr": "RBA",    "region": "Asia-Pac", "live": True, "source": "ASX 30-day IB cash rate futures (TradingView)"},
     "JP": {"name": "Bank of Japan",             "abbr": "BOJ MPM","region": "Asia-Pac", "live": True,  "source": "OSE 3M TONA futures (TradingView / DRIFT fallback)"},
     "CH": {"name": "Swiss National Bank",        "abbr": "SNB",    "region": "Europe",   "live": True,  "source": "Eurex 3M SARON futures (TradingView / DRIFT fallback)"},
-    "NZ": {"name": "Reserve Bank of New Zealand","abbr": "RBNZ MPC","region": "Asia-Pac","live": False, "source": "DRIFT fallback (no liquid futures on TradingView)"},
+    "NZ": {"name": "Reserve Bank of New Zealand","abbr": "RBNZ MPC","region": "Asia-Pac","live": True,  "source": "ASX NZ 90-Day B.A. futures via Barchart (BF{M}{YY})"},
 }
 
 # ── Hardcoded fallback data ───────────────────────────────────────────────────
@@ -1649,13 +1649,162 @@ def fetch_ch_implied_rates(meetings: list[str]) -> "list | None":
     return None
 
 
+# ── NZ: Reserve Bank of New Zealand — ASX NZ 90-Day B.A. futures (Barchart) ──
+#
+# ASX NZ 90-Day Bank Accepted Bill (B.A.) futures, ticker root "BF".
+# Quarterly contracts only: H=Mar, M=Jun, U=Sep, Z=Dec.
+# Symbol format: BF{M}{YY}  e.g. BFM26, BFU26, BFZ26, BFH27
+# Settlement = 100 − annualised 90-day B.A. rate.
+# Spread calibration: same approach as CORRA / TONA / SARON.
+# Price source: Barchart public API / quote pages (not on TradingView).
+
+_NZ_BA_QUARTERLY = {3: 'H', 6: 'M', 9: 'U', 12: 'Z'}
+
+
+def _barchart_bf_prices(symbols: list) -> "dict | None":
+    """
+    Batch-fetch last prices for BF futures from Barchart internal API.
+    Returns {symbol: price} or None on failure.
+    """
+    joined = "%2C".join(symbols)
+    url = (
+        "https://www.barchart.com/proxies/core-api/v1/quotes/get"
+        f"?symbols={joined}&fields=symbol%2ClastPrice%2CtradeTime&raw=1"
+    )
+    try:
+        resp = requests.get(url, headers={
+            **HTTP_HEADERS,
+            "Referer": "https://www.barchart.com/",
+            "X-Requested-With": "XMLHttpRequest",
+        }, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        result = {}
+        for item in data.get("data", []):
+            # API returns either flat dict or {"raw": {...}, ...}
+            raw = item.get("raw", item)
+            sym   = raw.get("symbol")
+            price = raw.get("lastPrice")
+            if sym and price is not None:
+                result[sym] = float(price)
+        return result if result else None
+    except Exception as exc:
+        log.debug("  NZ Barchart API: %s", exc)
+    return None
+
+
+def _barchart_bf_page_price(symbol: str) -> "float | None":
+    """Scrape a single Barchart quote page for a BF contract price."""
+    url = f"https://www.barchart.com/futures/quotes/{symbol}/overview"
+    try:
+        resp = requests.get(url, headers=HTTP_HEADERS, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.content, "html.parser")
+
+        # 1. og:description  e.g. "BFM26 is trading at 96.245 ..."
+        og = soup.find("meta", property="og:description")
+        if og:
+            m = re.search(r"trading at ([\d.]+)", og.get("content", ""))
+            if m:
+                return float(m.group(1))
+
+        # 2. JSON-LD structured data
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                d = json.loads(script.string or "")
+                price = (d.get("price")
+                         or (d.get("offers") or {}).get("price"))
+                if price:
+                    return float(price)
+            except Exception:
+                pass
+
+        # 3. Page title  e.g. "BFM26 Futures Price - 96.245 ..."
+        title = soup.find("title")
+        if title:
+            m = re.search(r"[\-–]\s*([\d.]+)", title.get_text())
+            if m:
+                v = float(m.group(1))
+                if 80.0 <= v <= 105.0:   # plausible BA futures price range
+                    return v
+
+    except Exception as exc:
+        log.debug("  NZ Barchart page %s: %s", symbol, exc)
+    return None
+
+
 def fetch_nz_implied_rates(meetings: list[str]) -> "list | None":
     """
-    No liquid NZX interest rate futures available on TradingView.
-    Returns None immediately so the dashboard uses the DRIFT model.
+    ASX NZ 90-Day B.A. futures (BF{M}{YY}) via Barchart public pages.
+    Quarterly contracts: H=Mar, M=Jun, U=Sep, Z=Dec.
+    implied_rate = 100 − price.
+    Spread calibration and interpolation follow the CORRA/TONA/SARON pattern.
+    Falls back to DRIFT if fewer than 2 contracts are available.
     """
-    log.info("  NZ implied: no futures data source — using DRIFT model")
-    return None
+    today = datetime.now(_CEST).date()
+
+    try:
+        rbnz_rate = scrape_rbnz_rate()
+    except Exception as exc:
+        log.warning("  NZ implied: RBNZ rate unavailable (%s) — using DRIFT", exc)
+        return None
+
+    # Generate quarterly symbols covering today + ~18 months
+    syms = []
+    for yr in [today.year, today.year + 1]:
+        for m, mc in _NZ_BA_QUARTERLY.items():
+            if date(yr, m, 15) >= today - timedelta(days=30):
+                syms.append(f"BF{mc}{str(yr)[-2:]}")
+    syms = syms[:8]
+
+    log.info("  NZ implied: Barchart BF batch — %s", syms)
+    prices = _barchart_bf_prices(syms)
+
+    # Per-page fallback if batch API fails or returns too few contracts
+    if not prices or len(prices) < 2:
+        log.info("  NZ implied: batch API insufficient — falling back to per-page scraping")
+        prices = {}
+        for sym in syms:
+            p = _barchart_bf_page_price(sym)
+            if p is not None:
+                prices[sym] = p
+                log.info("  NZ BF page: %s = %.4f", sym, p)
+
+    if not prices or len(prices) < 2:
+        log.warning("  NZ implied: Barchart returned < 2 contracts — using DRIFT")
+        return None
+
+    # Build implied rate curve: (tenor_years, implied_rate)
+    ba_curve = []
+    for sym, price in prices.items():
+        mc    = sym[2]           # single letter, e.g. 'M'
+        yr    = 2000 + int(sym[3:])
+        month = next(m for m, c in _NZ_BA_QUARTERLY.items() if c == mc)
+        t     = max((date(yr, month, 15) - today).days / 365.0, 0.001)
+        ba_curve.append((t, round(100.0 - price, 4)))
+    ba_curve.sort()
+
+    # Anchor spread: nearest implied B.A. rate − current OCR
+    spread = ba_curve[0][1] - rbnz_rate
+    log.info("  NZ implied: BA-OCR spread (calibrated) = %.2fbps", spread * 100)
+    adjusted = [(t, r - spread) for t, r in ba_curve]
+
+    available_qtr = set()
+    for sym in prices:
+        mc    = sym[2]
+        yr    = 2000 + int(sym[3:])
+        available_qtr.add((yr, next(m for m, c in _NZ_BA_QUARTERLY.items() if c == mc)))
+
+    rates = _interpolate_curve(adjusted, meetings, "NZ BA")
+    if rates is None:
+        return None
+
+    result = []
+    for r, mtg in zip(rates, meetings):
+        mtg_d    = datetime.strptime(mtg, "%d %b %Y")
+        is_interp = (mtg_d.year, mtg_d.month) not in available_qtr
+        result.append((r, is_interp))
+    return result
 
 
 def fetch_ch_history_tradingview(meetings: list) -> list:

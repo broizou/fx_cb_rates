@@ -25,6 +25,9 @@ jobs:
         run: |
           pip install requests beautifulsoup4 openpyxl websocket-client tzdata
 
+      - name: Pull latest commits before updating
+        run: git pull origin main
+
       - name: Run update_data.py
         run: python update_data.py
 
