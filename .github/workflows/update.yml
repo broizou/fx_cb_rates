@@ -21,11 +21,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Sync with remote
-        run: |
-          git fetch origin main
-          git rebase origin/main
-
       - name: Install dependencies
         run: |
           pip install requests beautifulsoup4 openpyxl websocket-client
@@ -37,16 +32,22 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          cp wirp.html /tmp/wirp.html
+          cp wirp_data.json /tmp/wirp_data.json
+          cp wirp_history.json /tmp/wirp_history.json
+
+          git fetch origin main
+          git reset --hard origin/main
+
+          cp /tmp/wirp.html wirp.html
+          cp /tmp/wirp_data.json wirp_data.json
+          cp /tmp/wirp_history.json wirp_history.json
+
           git add wirp.html wirp_data.json wirp_history.json
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
           git commit -m "chore: weekly data update $(date -u '+%Y-%m-%d')"
-          for i in 1 2 3; do
-            git push && exit 0
-            echo "Push attempt $i failed, rebasing and retrying..."
-            git fetch origin main
-            git rebase origin/main
-          done
-          exit 1
+          git push
