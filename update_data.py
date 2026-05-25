@@ -1348,7 +1348,7 @@ def _tradingview_ws_prices(tickers: list, timeout: int = 25) -> "dict | None":
                     bars = d.get('p', [{}])[1].get('s1', {}).get('s', [])
                     if bars:
                         close = bars[-1]['v'][4]
-                        price = round(100.0 - float(close), 4)
+                        price = float(close)   # raw price — caller does 100-price
                     done.set()
                     ws.close()
                 elif m in ('symbol_error', 'series_error'):
