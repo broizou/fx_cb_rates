@@ -76,6 +76,7 @@ DRIFT = {
     "UK": 0.00,
     "CA": 0.00,
     "AU": 0.00,
+    "JP": 0.00,
 }
 
 # ── Static metadata ──────────────────────────────────────────────────────────
@@ -87,6 +88,7 @@ META = {
     "UK": {"name": "Bank of England",           "abbr": "MPC",    "region": "Europe",   "live": True, "source": "ICE 3M SONIA futures (TradingView)"},
     "CA": {"name": "Bank of Canada",            "abbr": "BOC",    "region": "Americas", "live": True, "source": "TMX 3M CORRA futures (TradingView)"},
     "AU": {"name": "Reserve Bank of Australia", "abbr": "RBA",    "region": "Asia-Pac", "live": True, "source": "ASX 30-day IB cash rate futures (TradingView)"},
+    "JP": {"name": "Bank of Japan",             "abbr": "BOJ MPM","region": "Asia-Pac", "live": True, "source": "TONA OIS (TradingView / DRIFT fallback)"},
 }
 
 # ── Hardcoded fallback data ───────────────────────────────────────────────────
@@ -117,6 +119,11 @@ FALLBACK = {
         "rate": 4.10,
         "meetings": ["19 May 2026","07 Jul 2026","11 Aug 2026","22 Sep 2026",
                      "03 Nov 2026","08 Dec 2026","03 Feb 2027","17 Mar 2027"],
+    },
+    "JP": {
+        "rate": 0.75,
+        "meetings": ["16 Jun 2026","31 Jul 2026","18 Sep 2026","30 Oct 2026",
+                     "18 Dec 2026","22 Jan 2027","19 Mar 2027","28 Apr 2027"],
     },
 }
 
@@ -545,6 +552,125 @@ def scrape_rba_rate() -> float:
 
     raise ValueError("AU rate not found")
 
+
+# ── JP: Bank of Japan ─────────────────────────────────────────────────────────
+
+# BOJ date abbreviations → standard 3-letter month
+_BOJ_MONTH_MAP = {
+    "Jan": "Jan", "Feb": "Feb", "Mar": "Mar", "Apr": "Apr",
+    "May": "May", "June": "Jun", "July": "Jul", "Aug": "Aug",
+    "Sept": "Sep", "Oct": "Oct", "Nov": "Nov", "Dec": "Dec",
+}
+
+
+def scrape_boj_meetings() -> list[str]:
+    """
+    BOJ MPM calendar page.
+    Year sections: <h2 id="p2026">2026</h2> followed by a <table>.
+    First <td> per data row: "Jan. 22 (Thurs.), 23 (Fri.)" — decision on last day.
+    """
+    url  = "https://www.boj.or.jp/en/mopo/mpmsche_minu/"
+    log.info("Fetching JP meetings: %s", url)
+    soup  = fetch(url)
+    today = date.today()
+    meetings: list[str] = []
+
+    for h2 in soup.find_all("h2"):
+        year_text = h2.get_text(strip=True)
+        if not re.match(r"^\d{4}$", year_text):
+            continue
+        year = int(year_text)
+        if year < today.year:
+            continue
+
+        table = h2.find_next_sibling("table") or h2.find_next("table")
+        if not table:
+            continue
+
+        for row in table.find_all("tr"):
+            tds = row.find_all("td")
+            if not tds:
+                continue
+            raw = tds[0].get_text(" ", strip=True)
+
+            # Extract month: first word(s) before a day number
+            month_m = re.match(r"([A-Za-z]+\.?)\s+\d", raw)
+            if not month_m:
+                continue
+            month_raw = month_m.group(1).rstrip(".")
+            month_norm = _BOJ_MONTH_MAP.get(month_raw)
+            if not month_norm:
+                continue
+
+            # All day numbers like "22" or "23" before the '(' bracket
+            days = re.findall(r"\b(\d{1,2})\s*\(", raw)
+            if not days:
+                continue
+            last_day = int(days[-1])
+
+            try:
+                dt = datetime.strptime(f"{last_day} {month_norm} {year}", "%d %b %Y").date()
+            except ValueError:
+                continue
+
+            if dt >= today:
+                meetings.append(dt.strftime("%d %b %Y"))
+            if len(meetings) == N_MEETINGS:
+                break
+
+        if len(meetings) == N_MEETINGS:
+            break
+
+    # Supplement with fallback if page only shows current-year meetings
+    if len(meetings) < N_MEETINGS:
+        fallback_dates = FALLBACK["JP"]["meetings"]
+        existing = set(meetings)
+        for fd in fallback_dates:
+            try:
+                dt = datetime.strptime(fd, "%d %b %Y").date()
+            except ValueError:
+                continue
+            if dt >= today and fd not in existing:
+                meetings.append(fd)
+            if len(meetings) == N_MEETINGS:
+                break
+        meetings.sort(key=lambda s: datetime.strptime(s, "%d %b %Y"))
+
+    log.info("  -> %d JP meetings", len(meetings))
+    return meetings[:N_MEETINGS]
+
+
+def scrape_boj_rate() -> float:
+    """
+    BOJ homepage: 'Interest Rate Applied to the Complementary Deposit Facility X.XX%'
+    This is the short-term policy rate (same as the uncollateralized overnight call rate target).
+    Fallback: scan the page text for the policy guideline rate.
+    """
+    url = "https://www.boj.or.jp/en/"
+    log.info("Fetching JP rate: %s", url)
+    soup = fetch(url)
+    text = soup.get_text(" ", strip=True)
+
+    # Primary: Complementary Deposit Facility rate (most explicitly stated)
+    m = re.search(
+        r"Complementary Deposit Facility[\s\S]{0,200}?([\d.]+)\s*%",
+        text,
+    )
+    if m:
+        rate = float(m.group(1))
+        if 0.0 <= rate <= 5.0:
+            log.info("  -> JP rate (deposit facility): %.4f%%", rate)
+            return rate
+
+    # Fallback: policy guideline "around X.XX percent"
+    m2 = re.search(r"around\s+([\d.]+)\s+percent", text)
+    if m2:
+        rate = float(m2.group(1))
+        if 0.0 <= rate <= 5.0:
+            log.info("  -> JP rate (guideline): %.4f%%", rate)
+            return rate
+
+    raise ValueError("JP rate not found")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1180,6 +1306,91 @@ def _rba_babs_fallback(meetings: list[str]) -> "list[float] | None":
         return None
 
 
+# ── JP: Bank of Japan — TONA OIS futures ─────────────────────────────────────
+
+# TONA futures on TFX use the same month codes as CME ZQ
+_TONA_MONTH = _FF_MONTH  # same convention
+
+def fetch_jp_implied_rates(meetings: list[str]) -> "list | None":
+    """
+    Primary: TFX TONA overnight rate futures via TradingView (TFX:TONA{M}{YYYY}).
+    Uses post-meeting-month contract (same convention as ZQ / ASX IB).
+    No spread adjustment — TONA settles directly to the uncollateralized call rate.
+    Fallback: return None → dashboard uses DRIFT model.
+    """
+    today = date.today()
+
+    contract_specs = []
+    for mtg_str in meetings:
+        try:
+            mtg = datetime.strptime(mtg_str, "%d %b %Y").date()
+        except ValueError:
+            return None
+        post_month = mtg.month + 1
+        post_year  = mtg.year
+        if post_month > 12:
+            post_month = 1
+            post_year += 1
+        tv_sym = f"TFX:TONA{_TONA_MONTH[post_month]}{post_year}"
+        contract_specs.append((mtg_str, tv_sym))
+
+    all_syms = list(dict.fromkeys(s for _, s in contract_specs))
+    log.info("  JP implied: TONA futures batch — %s", all_syms)
+    tv_prices = _tradingview_ff_prices(all_syms)
+
+    if tv_prices and len(tv_prices) >= 2:
+        results = []
+        for mtg_str, tv_sym in contract_specs:
+            if tv_sym in tv_prices:
+                implied = round(100.0 - tv_prices[tv_sym], 4)
+                log.info("  JP TONA implied[%s]: %s=%.4f%% -> %.4f%%",
+                         mtg_str, tv_sym, tv_prices[tv_sym], implied)
+                results.append((implied, False))
+            else:
+                log.warning("  JP implied[%s]: %s missing — interpolating", mtg_str, tv_sym)
+                curve = []
+                for sym, price in tv_prices.items():
+                    code = sym[len("TFX:TONA"):]
+                    mc, yr = code[0], int(code[1:])
+                    month = next(m for m, c in _TONA_MONTH.items() if c == mc)
+                    t = max((date(yr, month, 15) - today).days / 365.0, 0.001)
+                    curve.append((t, round(100.0 - price, 4)))
+                curve.sort()
+                interped = _interpolate_curve(curve, [mtg_str], "JP TONA interp")
+                results.append((interped[0] if interped else None, True))
+        if all(r is not None for r, _ in results):
+            return results
+
+    log.warning("  JP implied: TradingView TONA not available — using DRIFT")
+    return None
+
+
+def fetch_jp_history_tradingview(meetings: list) -> list:
+    """
+    Backfill JP BOJ history via TradingView (TFX TONA futures).
+    Uses post-month contract (same convention as ZQ).
+    """
+    meeting_syms = []
+    for mtg_str in meetings:
+        try:
+            mtg = datetime.strptime(mtg_str, "%d %b %Y")
+            post_month = mtg.month + 1
+            post_year  = mtg.year
+            if post_month > 12:
+                post_month = 1
+                post_year += 1
+            sym = f"TFX:TONA{_TONA_MONTH[post_month]}{post_year}"
+            meeting_syms.append((mtg_str, sym))
+        except Exception:
+            continue
+    snaps = _fetch_history_tv_aligned(meeting_syms)
+    if snaps:
+        log.info("  JP hist TradingView: %d snapshots assembled", len(snaps))
+        return snaps
+    log.warning("  JP hist TV: no TONA data available")
+    return []
+
+
 # Registry of implied-rate fetchers per market
 # (keyed by market code; returns list[float] or None)
 IMPLIED_RATE_FETCHERS: dict = {
@@ -1188,6 +1399,7 @@ IMPLIED_RATE_FETCHERS: dict = {
     "UK": fetch_uk_implied_rates,
     "CA": fetch_ca_implied_rates,
     "AU": fetch_au_implied_rates,
+    "JP": fetch_jp_implied_rates,
 }
 
 
@@ -1202,6 +1414,7 @@ LIVE_SCRAPERS = {
         "UK": scrape_boe_meetings,
         "CA": scrape_boc_meetings,
         "AU": scrape_rba_meetings,
+        "JP": scrape_boj_meetings,
     },
     "rates": {
         "US": scrape_fed_rate,
@@ -1209,6 +1422,7 @@ LIVE_SCRAPERS = {
         "UK": scrape_boe_rate,
         "CA": scrape_boc_rate,
         "AU": scrape_rba_rate,
+        "JP": scrape_boj_rate,
     },
 }
 
@@ -1835,6 +2049,9 @@ def main() -> None:
             elif code == "AU":
                 log.info("  AU: sparse history — running TradingView backfill...")
                 backfill = fetch_au_history_tradingview(markets["AU"]["meetings"])
+            elif code == "JP":
+                log.info("  JP: sparse history — running TradingView backfill...")
+                backfill = fetch_jp_history_tradingview(markets["JP"]["meetings"])
             if backfill:
                 existing = {s["date"] for s in history[code]}
                 new_snaps = [s for s in backfill if s["date"] not in existing]
