@@ -2181,10 +2181,10 @@
         2.0937,
         2.2083,
         2.2938,
-        2.3412,
-        2.3712,
-        2.395,
-        2.395
+        2.3411,
+        2.3683,
+        2.39,
+        2.39
       ],
       "impliedRatesInterp": [
         false,
@@ -4284,10 +4284,10 @@
             2.0937,
             2.2083,
             2.2938,
-            2.3412,
-            2.3712,
-            2.395,
-            2.395
+            2.3411,
+            2.3683,
+            2.39,
+            2.39
           ]
         }
       ]
@@ -13680,8 +13680,43 @@
       "region": "Asia-Pac",
       "live": false,
       "source": "DRIFT fallback (no liquid futures on TradingView)",
-      "history": []
+      "history": [
+        {
+          "date": "25 May 2026",
+          "impliedRates": [
+            3.25,
+            3.25,
+            3.25,
+            3.25,
+            3.25,
+            3.25,
+            3.25,
+            3.25
+          ]
+        }
+      ],
+      "noMarketData": true,
+      "impliedRates": [
+        3.25,
+        3.25,
+        3.25,
+        3.25,
+        3.25,
+        3.25,
+        3.25,
+        3.25
+      ],
+      "impliedRatesInterp": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
     }
   },
-  "last_updated": "25 May 2026 16:35 CEST"
+  "last_updated": "25 May 2026 16:41 CEST"
 }

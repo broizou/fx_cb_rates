@@ -33,21 +33,16 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          cp wirp.html /tmp/wirp.html
-          cp wirp_data.json /tmp/wirp_data.json
-          cp wirp_history.json /tmp/wirp_history.json
-
-          git fetch origin main
-          git reset --hard origin/main
-
-          cp /tmp/wirp.html wirp.html
-          cp /tmp/wirp_data.json wirp_data.json
-          cp /tmp/wirp_history.json wirp_history.json
-
           git add wirp.html wirp_data.json wirp_history.json
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
           git commit -m "chore: weekly data update $(date -u '+%Y-%m-%d')"
-          git push
+
+          # Push with up to 3 rebase retries to handle concurrent commits
+          for i in 1 2 3; do
+            git push && break
+            echo "Push attempt $i failed — rebasing and retrying..."
+            git pull --rebase origin main
+          done
