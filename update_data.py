@@ -1827,8 +1827,10 @@ def fetch_all_data() -> tuple[dict, list[str]]:
                 else:
                     log.info("  %s impliedRates: fetcher returned None — "
                              "computing DRIFT path", code)
+                    result[code]["noMarketData"] = True
             except Exception as exc:
                 log.warning("  %s impliedRates failed (%s) — computing DRIFT path", code, exc)
+                result[code]["noMarketData"] = True
 
         # ── DRIFT fallback: inject a linear path if no implied rates yet ─────────
         if "impliedRates" not in result[code]:
