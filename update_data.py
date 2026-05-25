@@ -2010,6 +2010,7 @@ def fetch_all_data() -> tuple[dict, list[str]]:
                     interp = [i for _, i in implied]
                     result[code]["impliedRates"]       = rates
                     result[code]["impliedRatesInterp"] = interp
+                    result[code].pop("noMarketData", None)
                     log.info("  %s impliedRates: %s", code,
                              [f"{r:.3f}" for r in rates])
                 else:
