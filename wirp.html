@@ -262,23 +262,23 @@ function getStance(bps) {
     return               {label:'Neutral',     cls:'stance-neutral'};
 }
 
-// ── Clock (UK / London time) ──
+// ── Clock (Paris / CEST time) ──
 function updateClock() {
     const now = new Date();
     const ukParts = new Intl.DateTimeFormat('en-GB', {
-        timeZone: 'Europe/London',
+        timeZone: 'Europe/Paris',
         hour: '2-digit', minute: '2-digit', second: '2-digit',
         hour12: false
     }).formatToParts(now);
     const ukDateParts = new Intl.DateTimeFormat('en-GB', {
-        timeZone: 'Europe/London',
+        timeZone: 'Europe/Paris',
         weekday: 'short', day: '2-digit', month: 'short', year: 'numeric'
     }).formatToParts(now);
     const get = (parts, type) => (parts.find(p => p.type === type) || {}).value || '';
     const hh = get(ukParts, 'hour'), mm = get(ukParts, 'minute'), ss = get(ukParts, 'second');
     document.getElementById('utcTime').textContent = `${hh}:${mm}:${ss}`;
     // Determine timezone abbreviation
-    const tzAbbr = now.toLocaleString('en-GB', {timeZone:'Europe/London', timeZoneName:'short'}).split(' ').pop();
+    const tzAbbr = now.toLocaleString('en-GB', {timeZone:'Europe/Paris', timeZoneName:'short'}).split(' ').pop();
     const wd = get(ukDateParts,'weekday'), d = get(ukDateParts,'day'), mo = get(ukDateParts,'month'), yr = get(ukDateParts,'year');
     document.getElementById('utcDate').textContent = `${wd} ${d} ${mo} ${yr} ${tzAbbr}`;
 }
