@@ -10,5 +10,4 @@ Thumbs.db
 # Project specific
 wirp_update.log
 *.csv
-wirp_data.json
 .claude/
