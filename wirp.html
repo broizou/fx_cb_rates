@@ -167,7 +167,7 @@
     <!-- Two charts side by side -->
     <div id="bankChartsRow" style="display:flex;gap:0;">
         <!-- Forward rate chart (left) -->
-        <div id="chartArea" style="flex:1;min-width:0;">
+        <div id="chartArea" style="flex:1;min-width:0;overflow:hidden;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
                 <span id="chartTitle" style="font-size:0.6rem;color:var(--text-dim);letter-spacing:0.1em;text-transform:uppercase;">Implied Rate Path</span>
                 <span style="font-size:0.58rem;color:var(--text-dim);">
@@ -176,10 +176,10 @@
                     <span style="display:inline-block;width:20px;border-top:2px dashed var(--text-dim);vertical-align:middle;margin-right:4px;"></span>Current Rate
                 </span>
             </div>
-            <svg id="rateChart" width="100%" height="330" style="overflow:visible;"></svg>
+            <svg id="rateChart" width="100%" height="330" style="overflow:hidden;"></svg>
         </div>
         <!-- Historical comparison chart (right) -->
-        <div id="compareChartArea" style="flex:1;min-width:0;background:var(--panel);border-left:1px solid var(--border-sub);padding:14px 22px 10px;"></div>
+        <div id="compareChartArea" style="flex:1;min-width:0;overflow:hidden;background:var(--panel);border-left:1px solid var(--border-sub);padding:14px 22px 10px;"></div>
     </div>
     <!-- Meeting table -->
     <div id="tableHeader" style="background:var(--panel);border-left:1px solid var(--border);border-right:1px solid var(--border);border-bottom:1px solid var(--border);">
@@ -942,8 +942,9 @@ function renderCrossMarket() {
         const yeColor  = yeBps === null ? 'var(--text-dim)' : yeBps < 0 ? 'var(--red)' : yeBps > 0 ? 'var(--green)' : 'var(--text-dim)';
         const yeHtml   = yeBps !== null ? `<div style="margin-top:5px;border-top:1px solid var(--border-sub);padding-top:5px;"><span style="font-size:.5rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;">31/12/${curYear}</span><span style="font-size:.68rem;font-weight:600;color:${yeColor};margin-left:4px;">${yeBps>=0?'+':''}${+yeBps.toFixed(0)} bps</span><span style="font-size:.55rem;color:var(--text-dim);margin-left:3px;">(${(yeBps/25).toFixed(1)} moves)</span></div>` : '';
         const borderStyle = isHL ? `border-color:${dotColor};box-shadow:0 0 0 1px ${dotColor};` : '';
+        const clickFn = code === 'NZ' ? 'showNZWIP()' : ("showBankDetail('" + code + "')");
 
-        tilesHtml += `<div class="mkt-card${isHL ? ' active-card' : ''}" onclick="${code === 'NZ' ? 'showNZWIP()' : \}"
+        tilesHtml += `<div class="mkt-card${isHL ? ' active-card' : ''}" onclick="${clickFn}"
             data-code="${code}" data-name="${m.name}" data-rate="${m.rate}"
             data-next-meeting="${data[0].meeting}" data-next-days="${nextDays ?? ''}"
             data-12m-bps="${totalBps.toFixed(1)}" data-live="${m.live || false}"
@@ -986,11 +987,11 @@ function renderCrossMarket() {
             <div style="display:flex;gap:0;">
                 <div style="flex:1;min-width:0;border-right:1px solid var(--border-sub);">
                     <div style="font-size:0.6rem;color:var(--text-dim);letter-spacing:.09em;text-transform:uppercase;margin-bottom:4px;">Relative (Δ vs Today)</div>
-                    <div id="globalChartArea"></div>
+                    <div id="globalChartArea" style="overflow:hidden;"></div>
                 </div>
                 <div style="flex:1;min-width:0;padding-left:14px;">
                     <div style="font-size:0.6rem;color:var(--text-dim);letter-spacing:.09em;text-transform:uppercase;margin-bottom:4px;">Level (%)</div>
-                    <div id="globalLevelChartArea"></div>
+                    <div id="globalLevelChartArea" style="overflow:hidden;"></div>
                 </div>
             </div>
         </div>

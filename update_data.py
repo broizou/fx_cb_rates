@@ -60,8 +60,10 @@ LOG_FILE   = os.path.join(SCRIPT_DIR, "wirp_update.log")
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "wirp_history.json")
 HISTORY_MAX_DAYS = 1095  # 3 years
 
-DATA_BEGIN = "<!-- WIRP_DATA_BEGIN -->"
-DATA_END   = "<!-- WIRP_DATA_END -->"
+DATA_BEGIN     = "<!-- WIRP_DATA_BEGIN -->"
+DATA_END       = "<!-- WIRP_DATA_END -->"
+SNAPSHOT_BEGIN = "<!-- WIRP_SNAPSHOT_BEGIN -->"
+SNAPSHOT_END   = "<!-- WIRP_SNAPSHOT_END -->"
 
 N_MEETINGS = 8    # target number of upcoming meetings to display
 
@@ -2659,6 +2661,83 @@ def inject_html(markets: dict, timestamp: str) -> bool:
     return True
 
 
+def inject_snapshot(markets: dict, timestamp: str) -> bool:
+    """Inject a compact AI-readable JSON snapshot (no history) between SNAPSHOT markers."""
+    if not os.path.exists(HTML_FILE):
+        return False
+    with open(HTML_FILE, "r", encoding="utf-8") as f:
+        html = f.read()
+    bi = html.find(SNAPSHOT_BEGIN)
+    ei = html.find(SNAPSHOT_END)
+    if bi == -1 or ei == -1:
+        log.warning("Snapshot markers not found in wirp.html — skipping snapshot injection")
+        return False
+
+    from datetime import date as _date
+    today = _date.today()
+
+    snapshot_markets = {}
+    for code, m in markets.items():
+        meetings_raw = m.get("meetings", [])
+        implied_raw  = m.get("impliedRates", [])
+        rate         = m.get("rate", 0)
+
+        # Compute days until next meeting
+        days_until = None
+        if meetings_raw:
+            try:
+                from datetime import datetime as _dt
+                nxt = _dt.strptime(meetings_raw[0], "%d %b %Y").date()
+                days_until = (nxt - today).days
+            except Exception:
+                pass
+
+        # Build meeting list
+        meetings_out = []
+        for i, mtg in enumerate(meetings_raw):
+            if i >= len(implied_raw) or implied_raw[i] is None:
+                continue
+            ir = implied_raw[i]
+            meetings_out.append({
+                "date":         mtg,
+                "implied_rate": round(ir, 4),
+                "change_bps":   round((ir - rate) * 100, 2),
+                "interp":       bool((m.get("impliedRatesInterp") or [])[i]) if i < len(m.get("impliedRatesInterp") or []) else False,
+            })
+
+        # 12M outlook
+        twelve_bps   = round((implied_raw[-1] - rate) * 100, 2) if implied_raw else 0
+        twelve_hikes = round(twelve_bps / 25, 1)
+
+        next_bps = round((implied_raw[0] - rate) * 100, 2) if implied_raw else 0
+
+        snapshot_markets[code] = {
+            "name":            m.get("name", ""),
+            "abbr":            m.get("abbr", ""),
+            "current_rate":    rate,
+            "live":            m.get("live", False),
+            "next_meeting":    {"date": meetings_raw[0], "days_until": days_until, "implied_change_bps": next_bps} if meetings_raw else {},
+            "twelve_month_bps":   twelve_bps,
+            "twelve_month_moves": twelve_hikes,
+            "meetings":        meetings_out,
+        }
+
+    snapshot = {"as_of": timestamp, "markets": snapshot_markets}
+    compact  = json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False)
+    block = (
+        f"{SNAPSHOT_BEGIN}\n"
+        f'<script type="application/json" id="wirp-snapshot">\n'
+        f"{compact}\n"
+        f"</script>\n"
+        f"{SNAPSHOT_END}"
+    )
+    updated = html[:bi] + block + html[ei + len(SNAPSHOT_END):]
+    with open(HTML_FILE, "w", encoding="utf-8") as f:
+        f.write(updated)
+    log.info("Snapshot injected -> %s", HTML_FILE)
+    return True
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2740,6 +2819,7 @@ def main() -> None:
 
     save_json(markets, timestamp)
     inject_html(markets, timestamp)
+    inject_snapshot(markets, timestamp)
 
     if errors:
         log.warning("Completed with %d error(s):", len(errors))
