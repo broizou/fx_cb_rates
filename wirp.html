@@ -329,7 +329,6 @@ function renderSummaryBand(code) {
     const nextRow    = data[0];
     const lastRow    = data[data.length - 1];
     const color      = MARKET_COLORS[code] || 'var(--amber)';
-    const isLive     = m.live === true;
 
     // Countdown
     const now     = Date.now();
@@ -355,8 +354,6 @@ function renderSummaryBand(code) {
     const outlookBpsStr = (totalBps >= 0 ? '+' : '') + totalBps.toFixed(1) + ' bps';
     const outlookColor  = totalBps > 0.5 ? 'var(--green)' : totalBps < -0.5 ? 'var(--red)' : 'var(--amber)';
 
-    const liveDot = `<span style="width:7px;height:7px;border-radius:50%;background:${isLive ? 'var(--green)' : 'var(--amber)'};display:inline-block;margin-right:3px;"></span>`;
-
     document.getElementById('bankDetailTitle').textContent = `${code} — ${m.name}`;
     document.getElementById('summaryStrip').innerHTML = `
         <div class="hero-header">
@@ -364,7 +361,6 @@ function renderSummaryBand(code) {
             <span style="font-size:0.78rem;font-weight:700;color:var(--text);">${code} — ${m.name}</span>
             <span style="font-size:0.6rem;color:var(--text-dim);">&nbsp;·&nbsp; ${m.abbr}</span>
             <span style="font-size:0.6rem;color:var(--text-dim);">&nbsp;·&nbsp; Step 25 bps</span>
-            <span style="font-size:0.6rem;color:var(--text-dim);margin-left:auto;">${liveDot}${isLive ? 'Live' : 'Static'}</span>
         </div>
         <div class="hero-cards">
             <div class="hero-card">
@@ -558,12 +554,19 @@ function renderCompareChart(code) {
     // Uses last non-null value so the line extends to the full 1Y horizon.
     function _padRates(rates, targetLen) {
         if (!rates.length) return rates;
-        let lastVal = null;
-        for (let i = rates.length - 1; i >= 0; i--) {
-            if (rates[i] != null) { lastVal = rates[i]; break; }
-        }
-        if (lastVal === null) return rates;
         const out = [...rates];
+        // Forward-fill: replace internal nulls with last seen non-null value
+        let fwd = null;
+        for (let i = 0; i < out.length; i++) {
+            if (out[i] != null) fwd = out[i];
+            else if (fwd !== null) out[i] = fwd;
+        }
+        // Find last non-null for end-padding
+        let lastVal = null;
+        for (let i = out.length - 1; i >= 0; i--) {
+            if (out[i] != null) { lastVal = out[i]; break; }
+        }
+        if (lastVal === null) return out;
         while (out.length < targetLen) out.push(lastVal);
         return out.slice(0, targetLen);
     }
@@ -1017,7 +1020,6 @@ function showBankDetail(code) {
     renderChart(code);
     renderCompareChart(code);
     renderTable(code);
-    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function closeBankDetail() {
@@ -1058,7 +1060,6 @@ function showNZWIP() {
     document.getElementById('totalsRow').innerHTML = '';
     renderCrossMarket();
     document.querySelectorAll('.mkt-card').forEach(c => c.classList.toggle('active-card', c.dataset.code === 'NZ'));
-    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // ── Tooltip ──────────────────────────────────────────────────────────────────
