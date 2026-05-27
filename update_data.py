@@ -2392,43 +2392,237 @@ def _fetch_history_tv_aligned(meeting_syms: list, n_bars: int = 750) -> list:
 
 def fetch_eu_history_tradingview(meetings: list) -> list:
     """
-    Backfill EU ECB history via TradingView (Eurex FEU3 EURIBOR 3M futures).
-    Falls back to ECB SDW yield curve approach.
+    Backfill EU ECB history via TradingView (Eurex FEU3 EURIBOR 3M quarterly futures).
+
+    Uses only the liquid quarterly contracts (Mar/Jun/Sep/Dec) and applies the same
+    spread-calibrated linear interpolation as the live fetch_ecb_implied_rates() —
+    so every meeting position gets a real interpolated value with no internal nulls.
+
+    Historical ECB DFR is fetched from ECB SDW for per-date spread calibration.
+    Falls back to ECB SDW yield curve if TradingView is unavailable.
     """
-    meeting_syms = []
-    for mtg_str in meetings:
+    from datetime import timedelta
+    today = datetime.now(_CEST).date()
+    QUARTERLY = {3: 'H', 6: 'M', 9: 'U', 12: 'Z'}
+
+    # ── 1. Build list of quarterly contracts spanning history + 18M forward ──
+    syms_and_dt: list[tuple[str, date]] = []
+    for yr in range(today.year - 1, today.year + 3):
+        for m, mc in sorted(QUARTERLY.items()):
+            contract_dt = date(yr, m, 15)
+            if contract_dt >= today - timedelta(days=HISTORY_MAX_DAYS + 90):
+                syms_and_dt.append((f"EUREX:FEU3{mc}{yr}", contract_dt))
+
+    # ── 2. Fetch OHLCV history for each quarterly contract ────────────────────
+    sym_prices: dict[str, dict] = {}   # sym → {date_str: implied_rate}
+    sym_cdt:    dict[str, date] = {}   # sym → contract mid-month date
+    for sym, cdt in syms_and_dt:
+        prices = _tv_fetch_ohlcv(sym, n_bars=750)
+        if prices:
+            sym_prices[sym] = prices
+            sym_cdt[sym]    = cdt
+            log.info("  EU hist TV: %s — %d bars", sym, len(prices))
+        else:
+            log.debug("  EU hist TV: no data for %s", sym)
+
+    if len(sym_prices) < 2:
+        log.warning("  EU hist TV: <2 quarterly contracts available — falling back to ECB SDW")
+        return fetch_eu_history_ecb(meetings)
+
+    # ── 3. Fetch historical ECB DFR for per-date spread calibration ───────────
+    dfr_by_iso: dict[str, float] = {}
+    start_iso = (today - timedelta(days=HISTORY_MAX_DAYS)).strftime("%Y-%m-%d")
+    try:
+        url = (f"https://data-api.ecb.europa.eu/service/data/FM/B.U2.EUR.4F.KR.DFR.LEV"
+               f"?startPeriod={start_iso}&format=jsondata")
+        r = requests.get(url, timeout=30, headers=HTTP_HEADERS)
+        r.raise_for_status()
+        data = r.json()
+        dim_vals = data["structure"]["dimensions"]["observation"][0]["values"]
+        obs = list(data["dataSets"][0]["series"].values())[0]["observations"]
+        for k, v in obs.items():
+            if v[0] is not None:
+                dfr_by_iso[dim_vals[int(k)]["id"]] = float(v[0])
+        log.info("  EU hist TV: DFR history — %d dates", len(dfr_by_iso))
+    except Exception as exc:
+        log.warning("  EU hist TV: DFR history failed (%s) — spread will use last known value", exc)
+
+    # ── 4. Assemble per-date snapshots with full curve interpolation ──────────
+    all_dates: set[str] = set()
+    for prices in sym_prices.values():
+        all_dates.update(prices.keys())
+
+    snaps: list[dict] = []
+    last_dfr: float | None = None
+
+    for ds in sorted(all_dates, key=lambda x: _hist_sort_key(x)):
         try:
-            mtg = datetime.strptime(mtg_str, "%d %b %Y")
-            sym = f"EUREX:FEU3{_EURIBOR_MONTH[mtg.month]}{mtg.year}"
-            meeting_syms.append((mtg_str, sym))
+            snap_dt   = datetime.strptime(ds, "%d %b %Y")
+            snap_date = snap_dt.date()
         except Exception:
             continue
-    snaps = _fetch_history_tv_aligned(meeting_syms)
+
+        # DFR for this date (carry forward on weekends / holidays)
+        dfr = dfr_by_iso.get(snap_date.strftime("%Y-%m-%d"))
+        if dfr is not None:
+            last_dfr = dfr
+        elif last_dfr is not None:
+            dfr = last_dfr
+        else:
+            continue  # no DFR known yet
+
+        # Build EURIBOR curve from contracts still in the future on this date
+        curve: list[tuple[float, float]] = []
+        for sym, prices in sym_prices.items():
+            if ds not in prices:
+                continue
+            t = (sym_cdt[sym] - snap_date).days / 365.0
+            if t > 0.01:
+                curve.append((t, prices[ds]))
+
+        if len(curve) < 2:
+            continue
+        curve.sort()
+
+        # Spread calibration: nearest contract's implied EURIBOR − DFR on that date
+        spread   = curve[0][1] - dfr
+        adjusted = [(t, r - spread) for t, r in curve]
+
+        # Interpolate to get a rate for every meeting — no nulls
+        rates = _interpolate_curve(adjusted, meetings, "EU hist TV")
+        if rates is None:
+            continue
+
+        snaps.append({"date": ds, "impliedRates": rates})
+
     if snaps:
-        log.info("  EU hist TradingView: %d snapshots assembled", len(snaps))
+        log.info("  EU hist TradingView: %d snapshots (quarterly interpolation, no nulls)",
+                 len(snaps))
         return snaps
-    log.warning("  EU hist TV: failed — falling back to ECB SDW")
+
+    log.warning("  EU hist TV: no snapshots built — falling back to ECB SDW")
     return fetch_eu_history_ecb(meetings)
 
 
 def fetch_uk_history_tradingview(meetings: list) -> list:
     """
     Backfill UK BoE history via TradingView (ICE SONIA 3M futures, ICEEUR:SO3).
-    Uses meeting-month contract; 100-price = implied 3M SONIA.
+    Uses only the liquid quarterly SONIA contracts (Mar/Jun/Sep/Dec) and applies
+    spread-calibrated linear interpolation — same approach as the live fetcher and
+    the fixed EU history builder.  Historical BoE bank rate is fetched from the
+    BoE statistics API for per-date spread calibration.
     """
-    meeting_syms = []
-    for mtg_str in meetings:
+    from datetime import timedelta
+    today    = datetime.now(_CEST).date()
+    QUARTERLY = {3: 'H', 6: 'M', 9: 'U', 12: 'Z'}
+
+    # ── 1. Quarterly SONIA contracts spanning history + 18M forward ───────────
+    # Include contracts from year-3 so older history (2023-2024) has enough
+    # near-term tenors available on each snapshot date.
+    syms_and_dt: list[tuple[str, date]] = []
+    for yr in range(today.year - 3, today.year + 3):
+        for m, mc in sorted(QUARTERLY.items()):
+            contract_dt = date(yr, m, 15)
+            syms_and_dt.append((f"ICEEUR:SO3{mc}{yr}", contract_dt))
+
+    # ── 2. Fetch OHLCV history ────────────────────────────────────────────────
+    sym_prices: dict[str, dict] = {}
+    sym_cdt:    dict[str, date] = {}
+    for sym, cdt in syms_and_dt:
+        prices = _tv_fetch_ohlcv(sym, n_bars=750)
+        if prices:
+            sym_prices[sym] = prices
+            sym_cdt[sym]    = cdt
+            log.info("  UK hist TV: %s — %d bars", sym, len(prices))
+        else:
+            log.debug("  UK hist TV: no data for %s", sym)
+
+    if len(sym_prices) < 2:
+        log.warning("  UK hist TV: <2 quarterly contracts — no data")
+        return []
+
+    # ── 3. Fetch historical BoE bank rate ─────────────────────────────────────
+    # Primary: FRED API series INTDSRGBM193N (BoE official bank rate, monthly)
+    # Fallback: live scrape (used as constant for all historical dates)
+    boe_by_iso: dict[str, float] = {}
+    start_iso = (today - timedelta(days=HISTORY_MAX_DAYS)).strftime("%Y-%m-%d")
+    if FRED_API_KEY:
         try:
-            mtg = datetime.strptime(mtg_str, "%d %b %Y")
-            sym = f"ICEEUR:SO3{_FF_MONTH[mtg.month]}{mtg.year}"
-            meeting_syms.append((mtg_str, sym))
+            url = (
+                "https://api.stlouisfed.org/fred/series/observations"
+                f"?series_id=INTDSRGBM193N&observation_start={start_iso}"
+                f"&file_type=json&api_key={FRED_API_KEY}"
+            )
+            r = requests.get(url, timeout=15)
+            r.raise_for_status()
+            for obs in r.json().get("observations", []):
+                v = obs.get("value", ".")
+                if v != ".":
+                    boe_by_iso[obs["date"]] = float(v)
+            log.info("  UK hist TV: BoE rate history (FRED) — %d observations", len(boe_by_iso))
+        except Exception as exc:
+            log.warning("  UK hist TV: FRED BoE rate failed (%s)", exc)
+    if not boe_by_iso:
+        try:
+            fallback_rate = scrape_boe_rate()
+            log.warning("  UK hist TV: no BoE history — using current rate %.4f%% for all dates",
+                        fallback_rate)
+            last_boe = fallback_rate
+        except Exception:
+            last_boe = None
+    else:
+        last_boe = None
+
+    # ── 4. Assemble per-date snapshots ────────────────────────────────────────
+    all_dates: set[str] = set()
+    for prices in sym_prices.values():
+        all_dates.update(prices.keys())
+
+    snaps: list[dict] = []
+    # Note: last_boe already set above (from boe_by_iso fallback or None)
+
+    for ds in sorted(all_dates, key=lambda x: _hist_sort_key(x)):
+        try:
+            snap_dt   = datetime.strptime(ds, "%d %b %Y")
+            snap_date = snap_dt.date()
         except Exception:
             continue
-    snaps = _fetch_history_tv_aligned(meeting_syms)
+
+        iso_ds = snap_date.strftime("%Y-%m-%d")
+        boe = boe_by_iso.get(iso_ds)
+        if boe is not None:
+            last_boe = boe
+        elif last_boe is not None:
+            boe = last_boe
+        else:
+            continue
+
+        curve: list[tuple[float, float]] = []
+        for sym, prices in sym_prices.items():
+            if ds not in prices:
+                continue
+            t = (sym_cdt[sym] - snap_date).days / 365.0
+            if t > 0.01:
+                curve.append((t, prices[ds]))
+
+        if len(curve) < 2:
+            continue
+        curve.sort()
+
+        spread   = curve[0][1] - boe
+        adjusted = [(t, r - spread) for t, r in curve]
+
+        rates = _interpolate_curve(adjusted, meetings, "UK hist TV")
+        if rates is None:
+            continue
+
+        snaps.append({"date": ds, "impliedRates": rates})
+
     if snaps:
-        log.info("  UK hist TradingView: %d snapshots assembled", len(snaps))
+        log.info("  UK hist TradingView: %d snapshots (quarterly interpolation, no nulls)",
+                 len(snaps))
         return snaps
-    log.warning("  UK hist TV: no data")
+    log.warning("  UK hist TV: no snapshots built")
     return []
 
 
@@ -2746,6 +2940,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="WIRP data updater — G10 + Asia")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print scraped data without writing files")
+    parser.add_argument("--rebuild-history", nargs="*", metavar="CODE",
+                        help="Force history rebuild for given codes (e.g. EU UK), "
+                             "or all markets if no codes given")
     args = parser.parse_args()
 
     log.info("=" * 60)
@@ -2763,8 +2960,18 @@ def main() -> None:
         return
 
     # ── History management ────────────────────────────────────────────────────
-    history = load_history()
+    history   = load_history()
     today_str = datetime.now(_CEST).date().strftime("%d %b %Y")
+
+    # --rebuild-history: clear selected markets so backfill triggers below
+    if args.rebuild_history is not None:
+        rebuild_codes = set(args.rebuild_history) if args.rebuild_history else set(ALL_MARKETS)
+        for code in rebuild_codes:
+            if code in ALL_MARKETS:
+                history[code] = []
+                log.info("  %s: history cleared for rebuild", code)
+            else:
+                log.warning("  --rebuild-history: unknown code '%s' ignored", code)
 
     for code in ALL_MARKETS:
         if code not in history:
@@ -2776,7 +2983,7 @@ def main() -> None:
             history[code] = [s for s in history[code] if s.get("date") != today_str]
             history[code].append({"date": today_str, "impliedRates": impl})
 
-        # Backfill from external sources if history is sparse (< 30 entries = first run)
+        # Backfill from external sources if history is sparse (< 30 entries = first run or rebuild)
         if len(history[code]) < 30:
             backfill = []
             if code == "US":
